@@ -18,10 +18,6 @@ from ai.geo import GeoNormalizer
 from ai.llm_client import get_client
 
 
-# ---------------------------------------------------------------------------
-# Priority configuration
-# ---------------------------------------------------------------------------
-
 _HIGH_PRIORITY_TYPES: frozenset[str] = frozenset({
     "Мошеннические действия",
     "Жалоба",
@@ -60,10 +56,6 @@ def _safe_str(value: Any, default: str = "") -> str:
 
 
 def _get_llm_summary(text: str) -> Optional[dict]:
-    """
-    Запросить у LLM только summary и recommendation.
-    Возвращает dict с ключами summary/recommendation или None при ошибке.
-    """
     import json
     import re
 
@@ -79,7 +71,7 @@ def _get_llm_summary(text: str) -> Optional[dict]:
                 {"role": "user", "content": text[:3000]},
             ],
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=150,
             timeout=15,
         )
 
@@ -106,16 +98,6 @@ def _get_llm_summary(text: str) -> Optional[dict]:
 
 
 class TicketEnricher:
-    """
-    Обогащает тикет AI-полями.
-
-    Rule-based (мгновенно):
-        ai_type, ai_lang, sentiment, priority, lat, lon
-
-    LLM (только если доступен):
-        summary, recommendation
-    """
-
     def __init__(self) -> None:
         self._sentiment_engine = SentimentEngine()
         self._type_classifier = TypeClassifier()
@@ -129,23 +111,18 @@ class TicketEnricher:
         city: str = _safe_str(ticket.get("city", ""))
         segment: str = _safe_str(ticket.get("segment", ""))
 
-        # ── Rule-based: классификация ────────────────────────────────────
         ai_type: str = self._type_classifier.classify(text)
         ai_lang: str = self._lang_detector.detect(text)
         sentiment: str = self._sentiment_engine.analyze(text)
         priority: int = self._calculate_priority(ai_type, sentiment, segment)
-
-        # ── Rule-based: гео ──────────────────────────────────────────────
         lat, lon = self._geo.geocode(city)
 
-        # ── LLM: только summary + recommendation ─────────────────────────
         llm = _get_llm_summary(text)
 
         if llm:
             summary = llm["summary"]
             recommendation = llm["recommendation"]
         else:
-            # Fallback если LLM недоступен
             summary = self._summarizer.summarize(text)
             recommendation = self._recommender.recommend(ai_type, priority, sentiment)
 
@@ -162,22 +139,11 @@ class TicketEnricher:
 
     @staticmethod
     def _calculate_priority(ai_type: str, sentiment: str, segment: str) -> int:
-        """
-        Правила (аддитивные):
-            base                                → 5
-            Мошенничество / Жалоба / Претензия  → +3
-            Негативная тональность              → +2
-            VIP или Priority сегмент            → +2
-        """
         score: int = _BASE_PRIORITY
-
         if ai_type in _HIGH_PRIORITY_TYPES:
             score += _HIGH_TYPE_BONUS
-
         if sentiment == "NEG":
             score += _NEGATIVE_SENTIMENT_BONUS
-
         if segment.strip().upper() in ("VIP", "PRIORITY"):
             score += _VIP_BONUS
-
         return _clamp(score, _PRIORITY_MIN, _PRIORITY_MAX)

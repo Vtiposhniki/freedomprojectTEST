@@ -2,8 +2,9 @@
 
 import os
 
-_client = None
 _openai_available = False
+_client = None
+_last_key = None  # запоминаем с каким ключом создан клиент
 
 try:
     from openai import OpenAI
@@ -13,24 +14,27 @@ except ImportError:
 
 
 def get_client():
-    global _client
+    global _client, _last_key
 
     if not _openai_available:
         return None
 
-    if _client is not None:
-        return _client
-
-    # Поддержка двух переменных окружения: OPENROUTER и прямой Anthropic/OpenAI
     api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     if not api_key:
-        print("[LLM] No API key found (OPENROUTER_API_KEY / OPENAI_API_KEY) — LLM disabled")
+        _client = None
+        _last_key = None
         return None
+
+    # Переиспользуем клиент если ключ не изменился
+    if _client is not None and _last_key == api_key:
+        return _client
+
+    base_url = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     try:
         _client = OpenAI(api_key=api_key, base_url=base_url)
+        _last_key = api_key
         print(f"[LLM] Client initialized → {base_url}")
         return _client
     except Exception as e:
