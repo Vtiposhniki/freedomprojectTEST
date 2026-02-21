@@ -1,0 +1,161 @@
+{
+  "total_tickets": 31,
+  "escalations": 2,
+  "escalation_rate": 0.06451612903225806,
+  "by_office": [
+    {
+      "office": "Астана",
+      "tickets": 20,
+      "escalations": 0
+    },
+    {
+      "office": "Караганда",
+      "tickets": 2,
+      "escalations": 2
+    },
+    {
+      "office": "Алматы",
+      "tickets": 2,
+      "escalations": 0
+    },
+    {
+      "office": "Усть-Каменогорск",
+      "tickets": 2,
+      "escalations": 0
+    },
+    {
+      "office": "Шымкент",
+      "tickets": 2,
+      "escalations": 0
+    },
+    {
+      "office": "Кокшетау",
+      "tickets": 1,
+      "escalations": 0
+    },
+    {
+      "office": "Костанай",
+      "tickets": 1,
+      "escalations": 0
+    },
+    {
+      "office": "Павлодар",
+      "tickets": 1,
+      "escalations": 0
+    }
+  ],
+  "by_type": {
+    "Консультация": 21,
+    "Смена данных": 5,
+    "Мошеннические действия": 3,
+    "Спам": 1,
+    "Претензия": 1
+  },
+  "by_lang": {
+    "ENG": 18,
+    "RU": 11,
+    "KZ": 2
+  },
+  "by_priority": {
+    "3": 19,
+    "8": 1,
+    "9": 3,
+    "10": 8
+  },
+  "fairness_by_office": [
+    {
+      "office": "Астана",
+      "managers": 7,
+      "tickets": 20,
+      "mean": 2.857142857142857,
+      "std_pop": 1.2453996981544782,
+      "max": 5,
+      "min": 1
+    },
+    {
+      "office": "Алматы",
+      "managers": 2,
+      "tickets": 2,
+      "mean": 1.0,
+      "std_pop": 0.0,
+      "max": 1,
+      "min": 1
+    },
+    {
+      "office": "Караганда",
+      "managers": 1,
+      "tickets": 2,
+      "mean": 2.0,
+      "std_pop": 0.0,
+      "max": 2,
+      "min": 2
+    },
+    {
+      "office": "Усть-Каменогорск",
+      "managers": 1,
+      "tickets": 2,
+      "mean": 2.0,
+      "std_pop": 0.0,
+      "max": 2,
+      "min": 2
+    },
+    {
+      "office": "Шымкент",
+      "managers": 1,
+      "tickets": 2,
+      "mean": 2.0,
+      "std_pop": 0.0,
+      "max": 2,
+      "min": 2
+    },
+    {
+      "office": "Кокшетау",
+      "managers": 1,
+      "tickets": 1,
+      "mean": 1.0,
+      "std_pop": 0.0,
+      "max": 1,
+      "min": 1
+    },
+    {
+      "office": "Костанай",
+      "managers": 1,
+      "tickets": 1,
+      "mean": 1.0,
+      "std_pop": 0.0,
+      "max": 1,
+      "min": 1
+    },
+    {
+      "office": "Павлодар",
+      "managers": 1,
+      "tickets": 1,
+      "mean": 1.0,
+      "std_pop": 0.0,
+      "max": 1,
+      "min": 1
+    }
+  ],
+  "trace_stats": {
+    "initial_pool": {
+      "mean": 6.451612903225806,
+      "min": 2,
+      "max": 8
+    },
+    "after_vip": {
+      "mean": 2.0,
+      "min": 0,
+      "max": 4
+    },
+    "after_chief": {
+      "mean": 2.2,
+      "min": 0,
+      "max": 3
+    },
+    "after_lang": {
+      "mean": 4.15,
+      "min": 0,
+      "max": 8
+    }
+  }
+}
