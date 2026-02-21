@@ -1,12 +1,6 @@
 # db.py
 """
-Все операции с PostgreSQL:
-- init_db()         — создать таблицы
-- load_csv()        — загрузить CSV файлы в БД (один раз)
-- get_tickets_df()  — прочитать тикеты из БД в DataFrame
-- get_managers_df() — прочитать менеджеров из БД в DataFrame
-- get_offices_df()  — прочитать офисы из БД в DataFrame
-- save_results()    — записать результат распределения в БД
+Все операции с PostgreSQL.
 """
 
 import os
@@ -18,10 +12,46 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Справочник адресов офисов (fallback если в CSV пусто) ──
+_OFFICE_ADDRESSES = {
+    "актау":            "17-й микрорайон, Бизнес-центр «Urban», зд. 22",
+    "актобе":            "пр. Алии Молдагуловой, 44",
+    "алматы":            "пр-т Аль-Фараби, 77/7 БЦ «Esentai Tower», 7 этаж",
+    "астана":            "Есиль район, Достық 16, БЦ «Talan Towers», 27 этаж",
+    "атырау":            "ул. Студенческая 52, БЦ «Адал», 2 этаж, 201 офис",
+    "караганда":            "пр. Нуркена Абдирова, ст 12 НП 3, 2 этаж",
+    "кокшетау":            "пр-т Назарбаева, д. 4/2",
+    "костанай":            "пр-т Аль-Фараби 65, 12 этаж, офис №1201",
+    "кызылорда":            "ул. Кунаева 4, БЦ Прима Парк",
+    "павлодар":            "ул. Луговая 16, «Дом инвесторов», 7 этаж",
+    "петропавловск":            "ул. Букетова 31А",
+    "тараз":            "ул. Желтоксан 86",
+    "уральск":            "ул. Ескалиева, д. 177, оф. 505",
+    "орал":            "ул. Ескалиева, д. 177, оф. 505",
+    "усть-каменогорск":            "ул. Максима Горького, д. 50",
+    "шымкент":            "ул. Кунаева, д. 59, 1 этаж",
+}
 
-# -------------------------------------------------------
+
+def _resolve_address(office_name: str, csv_address: str) -> str:
+    """Возвращает адрес из CSV если он не пустой, иначе из справочника."""
+    addr = str(csv_address).strip() if csv_address else ""
+    if addr and addr.lower() not in ("nan", "none", ""):
+        return addr
+    # Ищем по нормализованному ключу
+    key = office_name.lower().strip()
+    # Убираем префиксы
+    for prefix in ("г.", "город ", "city "):
+        if key.startswith(prefix):
+            key = key[len(prefix):].strip()
+    # Замена ё → е для сравнения
+    key = key.replace("ё", "е")
+    return _OFFICE_ADDRESSES.get(key, "")
+
+
+# ───────────────────────────────────────────────
 # Подключение
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
 
 def get_connection():
     return psycopg2.connect(
@@ -48,9 +78,9 @@ def init_db():
         conn.close()
 
 
-# -------------------------------------------------------
-# ЗАГРУЗКА CSV → БД  (запускается один раз)
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
+# ЗАГРУЗКА CSV → БД
+# ───────────────────────────────────────────────
 
 def load_csv(
     tickets_path  = "tickets.csv",
@@ -75,13 +105,20 @@ def load_csv(
             # --- Офисы ---
             office_map = {}
             for _, row in units_df.iterrows():
-                name    = str(row.get("офис", "")).strip()
-                address = str(row.get("адрес", "")).strip()
+                name        = str(row.get("офис", "")).strip()
+                csv_address = str(row.get("адрес", "") or "").strip()
+
+                # Адрес: из CSV если есть, иначе из справочника
+                address = _resolve_address(name, csv_address)
+
                 lat, lon = geo.geocode(name)
                 cur.execute("""
                     INSERT INTO offices (name, address, lat, lon)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (name) DO UPDATE SET address=EXCLUDED.address
+                    ON CONFLICT (name) DO UPDATE
+                        SET address = EXCLUDED.address,
+                            lat     = EXCLUDED.lat,
+                            lon     = EXCLUDED.lon
                     RETURNING id
                 """, (name, address, lat, lon))
                 office_map[name] = cur.fetchone()[0]
@@ -146,28 +183,51 @@ def load_csv(
         conn.close()
 
 
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
+# Патч адресов для уже загруженных офисов
+# ───────────────────────────────────────────────
+
+def patch_office_addresses():
+    """
+    Обновляет адреса офисов в БД из встроенного справочника.
+    Запускать если офисы уже загружены, но адреса пустые.
+    """
+    conn = get_connection()
+    updated = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, address FROM offices")
+            offices = cur.fetchall()
+            for oid, name, current_addr in offices:
+                if current_addr and current_addr.strip() not in ("", "nan", "none"):
+                    continue  # адрес уже есть — не трогаем
+                new_addr = _resolve_address(name, "")
+                if new_addr:
+                    cur.execute(
+                        "UPDATE offices SET address = %s WHERE id = %s",
+                        (new_addr, oid)
+                    )
+                    updated += 1
+                    print(f"[DB] Address patched: {name} → {new_addr}")
+        conn.commit()
+        print(f"[DB] Patched {updated} office addresses ✅")
+    finally:
+        conn.close()
+    return updated
+
+
+# ───────────────────────────────────────────────
 # ЧТЕНИЕ ИЗ БД → DataFrame
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
 
 def get_tickets_df() -> pd.DataFrame:
     conn = get_connection()
     try:
-        df = pd.read_sql("""
-            SELECT
-                guid,
-                description,
-                segment,
-                country,
-                city,
-                gender,
-                birth_date,
-                region,
-                street,
-                house
+        return pd.read_sql("""
+            SELECT guid, description, segment, country,
+                   city, gender, birth_date, region, street, house
             FROM tickets
         """, conn)
-        return df
     finally:
         conn.close()
 
@@ -175,7 +235,7 @@ def get_tickets_df() -> pd.DataFrame:
 def get_managers_df() -> pd.DataFrame:
     conn = get_connection()
     try:
-        df = pd.read_sql("""
+        return pd.read_sql("""
             SELECT
                 m.name      AS "ФИО",
                 m.position  AS "Должность ",
@@ -185,7 +245,6 @@ def get_managers_df() -> pd.DataFrame:
             FROM managers m
             LEFT JOIN offices o ON o.id = m.office_id
         """, conn)
-        return df
     finally:
         conn.close()
 
@@ -193,35 +252,30 @@ def get_managers_df() -> pd.DataFrame:
 def get_offices_df() -> pd.DataFrame:
     conn = get_connection()
     try:
-        df = pd.read_sql("SELECT name AS \"Офис\", address AS \"Адрес\" FROM offices", conn)
-        return df
+        return pd.read_sql(
+            "SELECT name AS \"Офис\", address AS \"Адрес\" FROM offices",
+            conn
+        )
     finally:
         conn.close()
 
 
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
 # СОХРАНЕНИЕ РЕЗУЛЬТАТОВ → БД
-# -------------------------------------------------------
+# ───────────────────────────────────────────────
 
 def save_results(result_df: pd.DataFrame):
-    """
-    Записать итоговые assignments в БД.
-    Перед вставкой очищает предыдущие результаты для тех же тикетов,
-    чтобы не было дублей при повторном запуске run.py.
-    """
     conn = get_connection()
     saved = 0
     try:
         with conn.cursor() as cur:
 
-            # Загружаем маппинги
             cur.execute("SELECT name, id FROM offices")
             office_map = {row[0]: row[1] for row in cur.fetchall()}
 
             cur.execute("SELECT name, id FROM managers")
             manager_map = {row[0]: row[1] for row in cur.fetchall()}
 
-            # Собираем ticket_id для всех guid в текущем батче
             guids = result_df["guid"].astype(str).tolist()
             cur.execute(
                 "SELECT guid, id FROM tickets WHERE guid = ANY(%s)",
@@ -229,30 +283,19 @@ def save_results(result_df: pd.DataFrame):
             )
             ticket_id_map = {row[0]: row[1] for row in cur.fetchall()}
 
-            # Удаляем старые assignments и ai_analysis для этих тикетов
-            # (ON DELETE CASCADE не работает в обратную сторону, удаляем вручную)
             ticket_ids = list(ticket_id_map.values())
             if ticket_ids:
-                cur.execute(
-                    "DELETE FROM assignments WHERE ticket_id = ANY(%s)",
-                    (ticket_ids,)
-                )
-                cur.execute(
-                    "DELETE FROM ai_analysis WHERE ticket_id = ANY(%s)",
-                    (ticket_ids,)
-                )
-                deleted = cur.rowcount
+                cur.execute("DELETE FROM assignments WHERE ticket_id = ANY(%s)", (ticket_ids,))
+                cur.execute("DELETE FROM ai_analysis  WHERE ticket_id = ANY(%s)", (ticket_ids,))
                 print(f"[DB] Cleared previous results for {len(ticket_ids)} tickets")
 
-            # Вставляем новые результаты
             for _, row in result_df.iterrows():
                 guid = str(row["guid"])
                 ticket_id = ticket_id_map.get(guid)
                 if not ticket_id:
-                    print(f"[DB] WARN: ticket not found for guid={guid}, skipping")
+                    print(f"[DB] WARN: ticket not found guid={guid}")
                     continue
 
-                # ai_analysis
                 cur.execute("""
                     INSERT INTO ai_analysis
                         (ticket_id, ai_type, ai_lang, sentiment,
@@ -272,7 +315,6 @@ def save_results(result_df: pd.DataFrame):
                 ))
                 ai_id = cur.fetchone()[0]
 
-                # assignment
                 manager_name  = str(row.get("manager", ""))
                 is_escalation = manager_name == "CAPITAL_ESCALATION"
                 manager_id    = manager_map.get(manager_name) if not is_escalation else None

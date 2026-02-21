@@ -11,7 +11,7 @@ from db import get_tickets_df, get_managers_df, get_offices_df, save_results
 # Сколько тикетов обогащать параллельно.
 # 5 — безопасно для большинства LLM API (не триггерит rate limit).
 # Можно поднять до 8-10 если API не ругается.
-MAX_WORKERS = 12
+MAX_WORKERS = 20
 
 
 def enrich_one(enricher: TicketEnricher, row: pd.Series) -> dict:

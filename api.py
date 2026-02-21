@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import pandas as pd
+import numpy as np
 import json
 import os
 import sys
@@ -56,6 +57,34 @@ def query_df(sql: str, params=None) -> pd.DataFrame:
         return pd.read_sql(sql, conn, params=params)
     finally:
         conn.close()
+
+
+def safe_serialize(df: pd.DataFrame) -> list:
+    """
+    Безопасная сериализация DataFrame в список словарей.
+    Обрабатывает NaT, NaN, numpy типы, Timestamp.
+    """
+    records = []
+    for _, row in df.iterrows():
+        record = {}
+        for col, val in row.items():
+            if pd.isna(val) if not isinstance(val, (list, dict)) else False:
+                record[col] = None
+            elif hasattr(val, 'isoformat'):
+                # Timestamp, datetime
+                record[col] = val.isoformat()
+            elif isinstance(val, (np.integer,)):
+                record[col] = int(val)
+            elif isinstance(val, (np.floating,)):
+                record[col] = float(val) if not np.isnan(val) else None
+            elif isinstance(val, (np.bool_,)):
+                record[col] = bool(val)
+            elif isinstance(val, np.ndarray):
+                record[col] = val.tolist()
+            else:
+                record[col] = val
+        records.append(record)
+    return records
 
 
 # ─────────────────────────────────────────────
@@ -213,21 +242,21 @@ def get_tickets(
     params["limit"] = limit
     params["offset"] = offset
 
-    df = query_df(f"""
-        SELECT guid, segment, country, city, ai_type, ai_lang,
-               sentiment, priority, summary, recommendation,
-               office, office_reason, distance_km, is_escalation,
-               manager, manager_position, assigned_at
-        FROM v_assignments_full
-        {where}
-        ORDER BY priority DESC, assigned_at DESC
-        LIMIT %(limit)s OFFSET %(offset)s
-    """, params)
+    try:
+        df = query_df(f"""
+            SELECT guid, segment, country, city, ai_type, ai_lang,
+                   sentiment, priority, summary, recommendation,
+                   office, office_reason, distance_km, is_escalation,
+                   manager, manager_position, assigned_at
+            FROM v_assignments_full
+            {where}
+            ORDER BY priority DESC, assigned_at DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        """, params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    # Сериализуем
-    df["assigned_at"] = df["assigned_at"].astype(str)
-    df["is_escalation"] = df["is_escalation"].astype(bool)
-    return df.to_dict(orient="records")
+    return safe_serialize(df)
 
 
 @app.get("/tickets/count")
@@ -264,10 +293,8 @@ def get_ticket(guid: str):
     """, {"guid": guid})
     if df.empty:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    row = df.iloc[0].to_dict()
-    row["assigned_at"] = str(row["assigned_at"])
-    row["is_escalation"] = bool(row["is_escalation"])
-    return row
+    records = safe_serialize(df)
+    return records[0]
 
 
 # ─────────────────────────────────────────────
@@ -276,24 +303,73 @@ def get_ticket(guid: str):
 
 @app.get("/geo/tickets")
 def get_geo_tickets():
-    """Тикеты с координатами для карты."""
+    """Тикеты — координаты тикета если есть, иначе координаты офиса."""
     df = query_df("""
-        SELECT v.guid, v.city, v.office, v.ai_type, v.sentiment,
-               v.priority, v.is_escalation,
-               a.lat, a.lon
+        SELECT
+            v.guid, v.city, v.office, v.ai_type, v.sentiment,
+            v.priority, v.is_escalation,
+            COALESCE(a.lat, o.lat) AS lat,
+            COALESCE(a.lon, o.lon) AS lon
         FROM v_assignments_full v
-        JOIN tickets t ON t.guid = v.guid
-        JOIN ai_analysis a ON a.ticket_id = t.id
-        WHERE a.lat IS NOT NULL AND a.lon IS NOT NULL
+        JOIN tickets t      ON t.guid = v.guid
+        JOIN ai_analysis a  ON a.ticket_id = t.id
+        LEFT JOIN offices o ON o.name = v.office
+        WHERE COALESCE(a.lat, o.lat) IS NOT NULL
     """)
-    df["is_escalation"] = df["is_escalation"].astype(bool)
-    return df.to_dict(orient="records")
+    return safe_serialize(df)
 
 
 @app.get("/geo/offices")
 def get_geo_offices():
     df = query_df("SELECT name, address, lat, lon FROM offices WHERE lat IS NOT NULL")
-    return df.to_dict(orient="records")
+    if df.empty:
+        return []
+
+    # Справочник адресов — fallback если в БД пусто
+    _ADDRESSES = {
+        "актау":            "17-й микрорайон, Бизнес-центр «Urban», зд. 22",
+        "актобе":            "пр. Алии Молдагуловой, 44",
+        "алматы":            "пр-т Аль-Фараби, 77/7 БЦ «Esentai Tower», 7 этаж",
+        "астана":            "Есиль район, Достық 16, БЦ «Talan Towers», 27 этаж",
+        "атырау":            "ул. Студенческая 52, БЦ «Адал», 2 этаж, 201 офис",
+        "караганда":            "пр. Нуркена Абдирова, ст 12 НП 3, 2 этаж",
+        "кокшетау":            "пр-т Назарбаева, д. 4/2",
+        "костанай":            "пр-т Аль-Фараби 65, 12 этаж, офис №1201",
+        "кызылорда":            "ул. Кунаева 4, БЦ Прима Парк",
+        "павлодар":            "ул. Луговая 16, «Дом инвесторов», 7 этаж",
+        "петропавловск":            "ул. Букетова 31А",
+        "тараз":            "ул. Желтоксан 86",
+        "уральск":            "ул. Ескалиева, д. 177, оф. 505",
+        "орал":            "ул. Ескалиева, д. 177, оф. 505",
+        "усть-каменогорск":            "ул. Максима Горького, д. 50",
+        "шымкент":            "ул. Кунаева, д. 59, 1 этаж",
+    }
+
+    def _get_address(name: str, current: str) -> str:
+        if current and str(current).strip() not in ("", "nan", "none", "None"):
+            return str(current).strip()
+        key = str(name).lower().strip().replace("ё", "е")
+        for prefix in ("г.", "город ", "city "):
+            if key.startswith(prefix):
+                key = key[len(prefix):].strip()
+        return _ADDRESSES.get(key, "")
+
+    records = safe_serialize(df)
+    for r in records:
+        r["address"] = _get_address(r.get("name", ""), r.get("address", ""))
+    return records
+
+
+@app.post("/geo/offices/patch_addresses")
+def patch_office_addresses_endpoint():
+    """Патч адресов офисов из встроенного справочника."""
+    try:
+        from db import patch_office_addresses
+        updated = patch_office_addresses()
+        _cache.clear()
+        return {"updated": updated, "status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────
@@ -324,7 +400,6 @@ class ChatRequest(BaseModel):
 @app.post("/ai/chat")
 def ai_chat(req: ChatRequest):
     """AI-ассистент для аналитики — отвечает на вопросы по данным."""
-    # Собираем контекст из БД
     summary = get_summary()
     by_type = get_by_type()
     by_office = get_by_office()
@@ -334,7 +409,7 @@ def ai_chat(req: ChatRequest):
     context = f"""
 Ты — аналитик данных колл-центра Freedom Finance. У тебя есть следующие актуальные данные:
 
-📊 ОБЩАЯ СТАТИСТИКА:
+ОБЩАЯ СТАТИСТИКА:
 - Всего тикетов: {summary.get('total_tickets')}
 - Эскалаций: {summary.get('escalations')} ({summary.get('escalation_rate_pct')}%)
 - Средний приоритет: {summary.get('avg_priority')}
@@ -342,16 +417,16 @@ def ai_chat(req: ChatRequest):
 - Офисов: {summary.get('unique_offices')}
 - Менеджеров: {summary.get('unique_managers')}
 
-📋 ПО ТИПАМ ОБРАЩЕНИЙ:
+ПО ТИПАМ ОБРАЩЕНИЙ:
 {json.dumps(by_type, ensure_ascii=False, indent=2)}
 
-🏢 ПО ОФИСАМ:
+ПО ОФИСАМ:
 {json.dumps(by_office, ensure_ascii=False, indent=2)}
 
-😊 ПО СЕНТИМЕНТУ:
+ПО СЕНТИМЕНТУ:
 {json.dumps(by_sentiment, ensure_ascii=False, indent=2)}
 
-👥 НАГРУЗКА МЕНЕДЖЕРОВ (топ-10):
+НАГРУЗКА МЕНЕДЖЕРОВ (топ-10):
 {json.dumps(manager_load[:10], ensure_ascii=False, indent=2)}
 
 Отвечай на русском языке. Будь конкретным, используй числа из данных.
@@ -360,11 +435,10 @@ def ai_chat(req: ChatRequest):
 
     client = get_client()
     if client is None:
-        # Fallback — rule-based ответы
         return {"answer": _rule_based_answer(req.question, summary, by_type, by_office)}
 
     messages = [{"role": "system", "content": context}]
-    for msg in req.history[-6:]:  # последние 6 сообщений истории
+    for msg in req.history[-6:]:
         messages.append(msg)
     messages.append({"role": "user", "content": req.question})
 
@@ -379,11 +453,14 @@ def ai_chat(req: ChatRequest):
         answer = response.choices[0].message.content or ""
         return {"answer": answer, "source": "llm"}
     except Exception as e:
-        return {"answer": _rule_based_answer(req.question, summary, by_type, by_office), "source": "fallback", "error": str(e)}
+        return {
+            "answer": _rule_based_answer(req.question, summary, by_type, by_office),
+            "source": "fallback",
+            "error": str(e),
+        }
 
 
 def _rule_based_answer(question: str, summary: dict, by_type: list, by_office: list) -> str:
-    """Простые rule-based ответы если LLM недоступен."""
     q = question.lower()
 
     if any(w in q for w in ["сколько", "количество", "всего", "total"]):
@@ -392,15 +469,12 @@ def _rule_based_answer(question: str, summary: dict, by_type: list, by_office: l
             f"Эскалаций: **{summary.get('escalations')}** ({summary.get('escalation_rate_pct')}%)\n"
             f"Средний приоритет: **{summary.get('avg_priority')}**"
         )
-
     if any(w in q for w in ["офис", "город"]):
         top = by_office[0] if by_office else {}
         return f"Больше всего тикетов в офисе **{top.get('office')}**: {top.get('tickets')} шт."
-
     if any(w in q for w in ["тип", "категори", "жалоб", "консультаци"]):
         top = by_type[0] if by_type else {}
         return f"Самый частый тип: **{top.get('ai_type')}** — {top.get('count')} тикетов."
-
     if any(w in q for w in ["эскалаци", "escalat"]):
         return (
             f"Эскалаций: **{summary.get('escalations')}** из {summary.get('total_tickets')} "
