@@ -51,22 +51,84 @@ st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap');
 
-    html, body, [class*="css"] {{
-        font-family: 'Syne', sans-serif;
-        background-color: {COLORS['dark']};
-        color: {COLORS['text']};
+    /* ── BASE ── */
+    html, body {{
+        background-color: {COLORS['dark']} !important;
     }}
-
     .stApp {{
-        background: linear-gradient(135deg, {COLORS['dark']} 0%, {COLORS['surface']} 100%);
+        background: linear-gradient(135deg, {COLORS['dark']} 0%, {COLORS['surface']} 100%) !important;
     }}
 
-    /* Заголовок */
+    /* ── ГЛОБАЛЬНЫЙ ТЕКСТ — всё должно быть светлым ── */
+    html, body, p, span, div, label, li, a,
+    [class*="css"], .stMarkdown, .stText {{
+        color: {COLORS['text']} !important;
+        font-family: 'Syne', sans-serif !important;
+    }}
+
+    /* ── SIDEBAR ── */
+    [data-testid="stSidebar"] {{
+        background: {COLORS['surface']} !important;
+        border-right: 1px solid rgba(255,75,43,0.25) !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: {COLORS['text']} !important;
+    }}
+
+    /* Радио кнопки в сайдбаре */
+    [data-testid="stSidebar"] .stRadio label,
+    [data-testid="stSidebar"] .stRadio div,
+    [data-testid="stSidebar"] .stRadio p,
+    [data-testid="stSidebar"] .stRadio span {{
+        color: #FFFFFF !important;
+        font-size: 0.95rem !important;
+        font-weight: 500 !important;
+    }}
+    /* Активный пункт меню */
+    [data-testid="stSidebar"] .stRadio [aria-checked="true"] + div p,
+    [data-testid="stSidebar"] .stRadio [aria-checked="true"] ~ div {{
+        color: {COLORS['accent']} !important;
+        font-weight: 700 !important;
+    }}
+    /* Кружки radio */
+    [data-testid="stSidebar"] .stRadio [role="radio"] {{
+        border-color: {COLORS['primary']} !important;
+        background: transparent !important;
+    }}
+    [data-testid="stSidebar"] .stRadio [aria-checked="true"] {{
+        background: {COLORS['primary']} !important;
+        border-color: {COLORS['primary']} !important;
+    }}
+
+    /* Selectbox в сайдбаре */
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stSelectbox span {{
+        color: #CCCCCC !important;
+        font-size: 0.8rem !important;
+    }}
+    [data-testid="stSidebar"] .stSelectbox > div > div {{
+        background: rgba(255,255,255,0.07) !important;
+        border: 1px solid rgba(255,75,43,0.3) !important;
+        color: #FFFFFF !important;
+        border-radius: 6px !important;
+    }}
+    [data-testid="stSidebar"] .stSelectbox > div > div > div {{
+        color: #FFFFFF !important;
+    }}
+
+    /* Divider */
+    [data-testid="stSidebar"] hr {{
+        border-color: rgba(255,75,43,0.25) !important;
+        margin: 0.8rem 0 !important;
+    }}
+
+    /* ── ЗАГОЛОВОК ── */
     .fire-header {{
         background: linear-gradient(90deg, {COLORS['primary']}, {COLORS['secondary']}, {COLORS['accent']});
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-family: 'Syne', sans-serif;
+        background-clip: text;
+        font-family: 'Syne', sans-serif !important;
         font-weight: 800;
         font-size: 2.8rem;
         letter-spacing: -1px;
@@ -74,51 +136,55 @@ st.markdown(f"""
         margin-bottom: 0.2rem;
     }}
 
-    /* KPI карточки */
+    /* ── KPI КАРТОЧКИ ── */
     .kpi-card {{
         background: {COLORS['card']};
-        border: 1px solid rgba(255,75,43,0.2);
+        border: 1px solid rgba(255,75,43,0.25);
         border-radius: 12px;
         padding: 1.2rem 1.4rem;
         text-align: center;
-        transition: border-color 0.2s;
+        transition: border-color 0.2s, transform 0.2s;
     }}
-    .kpi-card:hover {{ border-color: {COLORS['primary']}; }}
+    .kpi-card:hover {{
+        border-color: {COLORS['primary']};
+        transform: translateY(-2px);
+    }}
     .kpi-value {{
-        font-family: 'Space Mono', monospace;
+        font-family: 'Space Mono', monospace !important;
         font-size: 2.2rem;
         font-weight: 700;
-        color: {COLORS['accent']};
+        color: {COLORS['accent']} !important;
         line-height: 1;
     }}
     .kpi-label {{
-        font-size: 0.75rem;
-        color: {COLORS['muted']};
+        font-size: 0.72rem;
+        color: #AAAAAA !important;
         text-transform: uppercase;
         letter-spacing: 1.5px;
         margin-top: 0.4rem;
     }}
 
-    /* Секции */
+    /* ── SECTION TITLE ── */
     .section-title {{
-        font-family: 'Syne', sans-serif;
+        font-family: 'Syne', sans-serif !important;
         font-weight: 700;
-        font-size: 1.1rem;
-        color: {COLORS['text']};
+        font-size: 1rem;
+        color: #FFFFFF !important;
         text-transform: uppercase;
         letter-spacing: 2px;
-        margin-bottom: 1rem;
+        margin-bottom: 0.8rem;
         padding-bottom: 0.4rem;
         border-bottom: 2px solid {COLORS['primary']};
     }}
 
-    /* Чат */
+    /* ── ЧАТ ── */
     .chat-user {{
-        background: rgba(255,75,43,0.15);
+        background: rgba(255,75,43,0.12);
         border-left: 3px solid {COLORS['primary']};
         border-radius: 0 8px 8px 0;
         padding: 0.8rem 1rem;
         margin: 0.5rem 0;
+        color: #FFFFFF !important;
     }}
     .chat-bot {{
         background: rgba(247,151,30,0.1);
@@ -126,49 +192,75 @@ st.markdown(f"""
         border-radius: 0 8px 8px 0;
         padding: 0.8rem 1rem;
         margin: 0.5rem 0;
+        color: #FFFFFF !important;
     }}
     .chat-source {{
         font-size: 0.65rem;
-        color: {COLORS['muted']};
-        font-family: 'Space Mono', monospace;
+        color: #777777 !important;
+        font-family: 'Space Mono', monospace !important;
     }}
 
-    /* Теги сентимента */
-    .badge-pos {{ background: rgba(0,201,167,0.2); color: #00C9A7; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
-    .badge-neu {{ background: rgba(247,151,30,0.2); color: #F7971E; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
-    .badge-neg {{ background: rgba(255,75,43,0.2); color: #FF4B2B; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
+    /* ── BADGES ── */
+    .badge-pos {{ background: rgba(0,201,167,0.2); color: #00C9A7 !important; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
+    .badge-neu {{ background: rgba(247,151,30,0.2); color: #F7971E !important; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
+    .badge-neg {{ background: rgba(255,75,43,0.2);  color: #FF6B50 !important; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; }}
 
-    /* Sidebar */
-    [data-testid="stSidebar"] {{
-        background: {COLORS['surface']};
-        border-right: 1px solid rgba(255,75,43,0.15);
-    }}
-
-    /* Кнопки */
+    /* ── КНОПКИ ── */
     .stButton > button {{
-        background: linear-gradient(90deg, {COLORS['primary']}, {COLORS['secondary']});
-        color: white;
-        border: none;
-        border-radius: 8px;
-        font-family: 'Space Mono', monospace;
-        font-weight: 700;
+        background: linear-gradient(90deg, {COLORS['primary']}, {COLORS['secondary']}) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-family: 'Space Mono', monospace !important;
+        font-weight: 700 !important;
         letter-spacing: 0.5px;
         transition: opacity 0.2s;
     }}
-    .stButton > button:hover {{ opacity: 0.85; }}
+    .stButton > button:hover {{ opacity: 0.85 !important; }}
+    .stButton > button p {{ color: #FFFFFF !important; }}
 
-    /* Таблица */
+    /* ── ФОРМА / ИНПУТ ── */
+    .stTextInput > div > div > input {{
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(255,75,43,0.35) !important;
+        color: #FFFFFF !important;
+        border-radius: 8px !important;
+    }}
+    .stTextInput label {{ color: #CCCCCC !important; }}
+
+    /* ── МЕТРИКИ ── */
+    [data-testid="stMetricValue"] {{ color: {COLORS['accent']} !important; }}
+    [data-testid="stMetricLabel"] {{ color: #AAAAAA !important; }}
+
+    /* ── СТАТУС ── */
+    .status-ok  {{ color: {COLORS['pos']} !important; font-family: 'Space Mono', monospace !important; font-size: 0.85rem; }}
+    .status-err {{ color: {COLORS['neg']} !important; font-family: 'Space Mono', monospace !important; font-size: 0.85rem; }}
+
+    /* ── ТАБЛИЦА ── */
     .dataframe th {{
         background: {COLORS['card']} !important;
         color: {COLORS['accent']} !important;
     }}
+    .dataframe td {{ color: {COLORS['text']} !important; }}
 
-    /* Plotly dark override */
-    .js-plotly-plot {{ border-radius: 10px; }}
+    /* ── PLOTLY ── */
+    .js-plotly-plot {{ border-radius: 10px; overflow: hidden; }}
 
-    /* Статус */
-    .status-ok  {{ color: {COLORS['pos']}; font-family: 'Space Mono', monospace; font-size: 0.8rem; }}
-    .status-err {{ color: {COLORS['neg']}; font-family: 'Space Mono', monospace; font-size: 0.8rem; }}
+    /* ── NUMBER INPUT ── */
+    .stNumberInput label {{ color: #CCCCCC !important; }}
+    .stNumberInput input {{ color: #FFFFFF !important; background: rgba(255,255,255,0.06) !important; border-color: rgba(255,75,43,0.3) !important; }}
+
+    /* ── SPINNER ── */
+    .stSpinner > div {{ border-top-color: {COLORS['primary']} !important; }}
+
+    /* Убираем белый фон у виджетов */
+    .stSelectbox > div, .stMultiSelect > div {{
+        background: transparent !important;
+    }}
+
+    /* Warning/Info блоки */
+    .stAlert {{ background: rgba(255,75,43,0.1) !important; border: 1px solid rgba(255,75,43,0.3) !important; }}
+    .stAlert p {{ color: #FFFFFF !important; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -177,7 +269,7 @@ st.markdown(f"""
 # API КЛИЕНТ
 # ─────────────────────────────────────────────
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch(endpoint: str, params: dict = None):
     try:
         r = requests.get(f"{API_BASE}{endpoint}", params=params, timeout=10)
@@ -238,7 +330,7 @@ with st.sidebar:
     st.markdown('<div class="fire-header">🔥 FIRE</div>', unsafe_allow_html=True)
     st.markdown('<div style="color:#888;font-size:0.75rem;letter-spacing:2px;margin-bottom:1.5rem;">ENGINE DASHBOARD</div>', unsafe_allow_html=True)
 
-    # Health check
+    # Health check — лёгкий запрос
     health = fetch("/health")
     if health:
         db_icon  = "🟢" if health.get("db")  else "🔴"
@@ -258,7 +350,7 @@ with st.sidebar:
 
     st.divider()
 
-    # Фильтры (только для страниц с данными)
+    # Фильтры — только мета (один лёгкий запрос)
     filters_meta = fetch("/meta/filters") or {}
     offices   = ["Все"] + filters_meta.get("offices",   [])
     ai_types  = ["Все"] + filters_meta.get("ai_types",  [])

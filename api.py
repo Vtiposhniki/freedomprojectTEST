@@ -9,14 +9,16 @@ FastAPI backend для FIRE Engine Dashboard.
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import pandas as pd
 import json
 import os
 import sys
+from functools import lru_cache
+import time
 
-# Добавляем корневую папку проекта в путь
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db import get_connection
@@ -24,13 +26,24 @@ from ai.llm_client import get_client
 
 app = FastAPI(title="FIRE Engine API", version="1.0.0")
 
-# CORS — разрешаем Streamlit подключаться
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Простой in-memory кеш ──
+_cache: dict = {}
+_cache_ttl = 60  # секунд
+
+def cached_query(key: str, sql: str, params=None):
+    now = time.time()
+    if key in _cache and now - _cache[key]["ts"] < _cache_ttl:
+        return _cache[key]["data"]
+    df = query_df(sql, params)
+    _cache[key] = {"data": df, "ts": now}
+    return df
 
 
 # ─────────────────────────────────────────────
@@ -51,8 +64,7 @@ def query_df(sql: str, params=None) -> pd.DataFrame:
 
 @app.get("/stats/summary")
 def get_summary():
-    """KPI карточки для главного дашборда."""
-    df = query_df("SELECT * FROM v_assignments_full")
+    df = cached_query("summary", "SELECT * FROM v_assignments_full")
     if df.empty:
         return {}
 
@@ -74,7 +86,7 @@ def get_summary():
 
 @app.get("/stats/by_type")
 def get_by_type():
-    df = query_df("""
+    df = cached_query("by_type", """
         SELECT ai_type, COUNT(*) as count,
                ROUND(AVG(priority)::numeric, 2) as avg_priority,
                SUM(CASE WHEN is_escalation THEN 1 ELSE 0 END) as escalations
@@ -87,7 +99,7 @@ def get_by_type():
 
 @app.get("/stats/by_office")
 def get_by_office():
-    df = query_df("""
+    df = cached_query("by_office", """
         SELECT office, COUNT(*) as tickets,
                SUM(CASE WHEN is_escalation THEN 1 ELSE 0 END) as escalations,
                ROUND(AVG(priority)::numeric, 2) as avg_priority
@@ -100,7 +112,7 @@ def get_by_office():
 
 @app.get("/stats/by_sentiment")
 def get_by_sentiment():
-    df = query_df("""
+    df = cached_query("by_sentiment", """
         SELECT sentiment, COUNT(*) as count
         FROM v_assignments_full
         GROUP BY sentiment
@@ -111,7 +123,7 @@ def get_by_sentiment():
 
 @app.get("/stats/by_lang")
 def get_by_lang():
-    df = query_df("""
+    df = cached_query("by_lang", """
         SELECT ai_lang, COUNT(*) as count
         FROM v_assignments_full
         GROUP BY ai_lang
@@ -122,7 +134,7 @@ def get_by_lang():
 
 @app.get("/stats/by_priority")
 def get_by_priority():
-    df = query_df("""
+    df = cached_query("by_priority", """
         SELECT priority, COUNT(*) as count
         FROM v_assignments_full
         GROUP BY priority
@@ -137,7 +149,7 @@ def get_by_priority():
 
 @app.get("/managers/load")
 def get_manager_load():
-    df = query_df("""
+    df = cached_query("manager_load", """
         SELECT manager, office, COUNT(*) as tickets,
                SUM(CASE WHEN is_escalation THEN 1 ELSE 0 END) as escalations
         FROM v_assignments_full
@@ -150,7 +162,7 @@ def get_manager_load():
 
 @app.get("/managers/fairness")
 def get_fairness():
-    df = query_df("""
+    df = cached_query("fairness", """
         SELECT office,
                COUNT(DISTINCT manager) as managers,
                COUNT(*) as tickets,
@@ -290,9 +302,8 @@ def get_geo_offices():
 
 @app.get("/meta/filters")
 def get_filters():
-    """Уникальные значения для фильтров."""
-    offices = query_df("SELECT DISTINCT office FROM v_assignments_full WHERE office IS NOT NULL ORDER BY office")
-    types   = query_df("SELECT DISTINCT ai_type FROM v_assignments_full WHERE ai_type IS NOT NULL ORDER BY ai_type")
+    offices = cached_query("meta_offices", "SELECT DISTINCT office FROM v_assignments_full WHERE office IS NOT NULL ORDER BY office")
+    types   = cached_query("meta_types",   "SELECT DISTINCT ai_type FROM v_assignments_full WHERE ai_type IS NOT NULL ORDER BY ai_type")
     return {
         "offices":    offices["office"].tolist(),
         "ai_types":   types["ai_type"].tolist(),
