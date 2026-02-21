@@ -1,5 +1,6 @@
 # engine.py
 import json
+import time
 from typing import Dict, List, Tuple, Any, Optional
 
 import pandas as pd
@@ -66,6 +67,10 @@ class FIREEngine:
             df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
         if "lon" in df.columns:
             df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+
+        # Нормализуем сегмент в верхний регистр — фикс бага с "Priority" vs "PRIORITY"
+        if "segment" in df.columns:
+            df["segment"] = df["segment"].astype(str).str.strip().str.upper()
 
         return df
 
@@ -167,9 +172,7 @@ class FIREEngine:
         return result
 
     def get_office(self, ticket: pd.Series) -> Tuple[str, str, Optional[float]]:
-        """
-        Decide office and return (office, reason, distance_km).
-        """
+        """Decide office and return (office, reason, distance_km)."""
         country = str(ticket.get("country", "")).lower().strip()
         city_raw = str(ticket.get("city", "")).strip()
         city_norm = self.geo.normalise(city_raw)
@@ -216,16 +219,16 @@ class FIREEngine:
         """Применить VIP / chief / language фильтры к пулу менеджеров."""
         subset = pool
 
-        if segment in ["VIP", "PRIORITY"]:
+        # segment уже в верхнем регистре после _prepare_tickets
+        if segment in ("VIP", "PRIORITY"):
             subset = subset[subset["skills_set"].apply(lambda s: "VIP" in s)]
 
+        # Только Главный специалист — startswith точно не захватывает
+        # "Ведущий спец" или просто "Спец"
         if ai_type == "Смена данных":
-            subset = subset[
-                subset["pos_norm"].str.contains("глав") &
-                subset["pos_norm"].str.contains("спец")
-            ]
+            subset = subset[subset["pos_norm"].str.startswith("глав")]
 
-        if ai_lang in ["KZ", "ENG"]:
+        if ai_lang in ("KZ", "ENG"):
             subset = subset[subset["skills_set"].apply(lambda s: ai_lang in s)]
 
         return subset
@@ -322,6 +325,8 @@ class FIREEngine:
         results: List[Dict[str, Any]] = []
 
         for _, ticket in self.tickets.iterrows():
+            t_start = time.time()
+
             ai_type   = ticket["ai_type"]
             ai_lang   = ticket["ai_lang"]
             priority  = ticket["priority"]
@@ -340,11 +345,11 @@ class FIREEngine:
             subset = self._apply_filters(pool, segment, ai_type, ai_lang)
 
             # Трейс фильтров
-            if segment in ["VIP", "PRIORITY"]:
+            if segment in ("VIP", "PRIORITY"):
                 trace["after_vip"] = int(len(subset))
             if ai_type == "Смена данных":
                 trace["after_chief"] = int(len(subset))
-            if ai_lang in ["KZ", "ENG"]:
+            if ai_lang in ("KZ", "ENG"):
                 trace["after_lang"] = int(len(subset))
 
             # ── Менеджер найден в своём офисе ──────────────────────
@@ -354,11 +359,13 @@ class FIREEngine:
                 manager_name = selected["name"]
                 self.managers.at[selected.name, "load"] += 1
 
+                elapsed_ms = int((time.time() - t_start) * 1000)
                 trace.update({
                     "escalation": False,
                     "rr_index": self.rr_counters.get(rr_key, 1) - 1,
                     "top2": subset.sort_values(["load", "name"]).head(2)["name"].tolist(),
                     "selected": manager_name,
+                    "routing_ms": elapsed_ms,
                 })
 
                 results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
@@ -373,6 +380,8 @@ class FIREEngine:
                 ticket, office, segment, ai_type, ai_lang
             )
 
+            elapsed_ms = int((time.time() - t_start) * 1000)
+
             if near_manager is not None:
                 manager_name = near_manager["name"]
                 self.managers.at[near_manager.name, "load"] += 1
@@ -382,6 +391,7 @@ class FIREEngine:
                     "redirected_to_office": near_office,
                     "redirected_distance_km": near_dist,
                     "selected": manager_name,
+                    "routing_ms": elapsed_ms,
                 })
 
                 results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
@@ -390,6 +400,7 @@ class FIREEngine:
             else:
                 # Абсолютная эскалация — нет никого нигде
                 trace["escalation"] = True
+                trace["routing_ms"] = elapsed_ms
                 results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
                                                office, office_reason, distance_km,
                                                "CAPITAL_ESCALATION", trace))

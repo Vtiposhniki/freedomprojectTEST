@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 out/
 venv/
+
+# CSV — данные грузятся через gdrive_loader.py
+tickets.csv
+managers.csv
+business_units.csv
+
+# Артефакты прогонов
+analysis_report.json
+dataset/
+

@@ -1,3 +1,4 @@
+# ai/enricher.py
 """
 enricher.py
 -----------
@@ -36,14 +37,19 @@ LLM_MODEL = "qwen/qwen3-next-80b-a3b-instruct"
 SUMMARY_SYSTEM_PROMPT = """
 Ты — помощник оператора колл-центра.
 
-По тексту обращения клиента напиши СТРОГО JSON:
+По тексту обращения клиента напиши СТРОГО JSON без лишнего текста:
 
 {
   "summary": "краткая суть обращения в 1-2 предложения",
   "recommendation": "конкретная рекомендация менеджеру что делать"
 }
 
-Никакого текста вне JSON. Язык ответа — русский.
+ВАЖНО:
+- Только JSON, никакого текста до или после
+- Никаких markdown-блоков (``` и т.п.)
+- summary не длиннее 150 символов
+- recommendation не длиннее 150 символов
+- Язык ответа — русский
 """
 
 
@@ -68,21 +74,27 @@ def _get_llm_summary(text: str) -> Optional[dict]:
             model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": text[:3000]},
+                {"role": "user", "content": text[:2000]},  # уменьшили вход чтобы дать место выходу
             ],
-            temperature=0.3,
-            max_tokens=150,
+            temperature=0.2,
+            max_tokens=400,   # было 150 — не хватало, JSON обрезался
             timeout=15,
         )
 
         raw = response.choices[0].message.content or ""
         print(f"[LLM] summary | chars: {len(raw)}")
 
+        # Убираем markdown-блоки если модель всё равно их добавила
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
         json_str = match.group(1).strip() if match else raw.strip()
-        match2 = re.search(r"\{[\s\S]+\}", json_str)
+
+        # Вытаскиваем первый JSON-объект
+        match2 = re.search(r"\{[\s\S]+?\}", json_str)
         if match2:
             json_str = match2.group(0)
+
+        # Попытка починить обрезанный JSON — закрываем незакрытые кавычки и скобки
+        json_str = _try_repair_json(json_str)
 
         data = json.loads(json_str)
         summary = _safe_str(data.get("summary"))
@@ -95,6 +107,38 @@ def _get_llm_summary(text: str) -> Optional[dict]:
     except Exception as e:
         print(f"[LLM] summary error: {type(e).__name__}: {e}")
         return None
+
+
+def _try_repair_json(s: str) -> str:
+    """
+    Пытается починить JSON обрезанный по max_tokens.
+    Закрывает незакрытые строки и скобки.
+    """
+    s = s.strip()
+    if not s:
+        return s
+
+    # Считаем незакрытые кавычки (не экранированные)
+    in_string = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\' and in_string:
+            i += 2  # пропускаем escape-последовательность
+            continue
+        if c == '"':
+            in_string = not in_string
+        i += 1
+
+    # Если строка не закрыта — закрываем
+    if in_string:
+        s += '"'
+
+    # Закрываем скобки
+    if not s.endswith('}'):
+        s += '}'
+
+    return s
 
 
 class TicketEnricher:
