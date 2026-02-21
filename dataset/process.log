@@ -82,3 +82,15 @@
 2026-02-22 00:35:54,690 | INFO | Found units: dataset\extracted\business_units.csv
 2026-02-22 00:35:55,126 | INFO | DB cleared
 2026-02-22 00:35:55,346 | INFO | Process completed
+2026-02-22 01:10:12,863 | INFO | Process started
+2026-02-22 01:10:12,864 | INFO | Downloading: https://drive.google.com/file/d/1MYk9WK_0K_out54YaNUl41p2nzL24Ta8/view
+2026-02-22 01:10:20,236 | INFO | Downloaded to: dataset\archives\archive
+2026-02-22 01:10:20,246 | INFO | SHA256: 65b4f0fc5a0f0e102f5cfa20911e175499c776c5089a1c3fcc06c6487e268fe0
+2026-02-22 01:10:20,251 | INFO | Archive type: zip
+2026-02-22 01:10:20,322 | INFO | Extraction finished
+2026-02-22 01:10:20,323 | INFO | Cleanup: removed 0 files
+2026-02-22 01:10:20,324 | INFO | Found tickets: dataset\extracted\tickets.csv
+2026-02-22 01:10:20,324 | INFO | Found managers: dataset\extracted\managers.csv
+2026-02-22 01:10:20,324 | INFO | Found units: dataset\extracted\business_units.csv
+2026-02-22 01:10:20,743 | INFO | DB cleared
+2026-02-22 01:10:20,938 | INFO | Process completed

@@ -3,3 +3,16 @@ python-dotenv
 pandas==2.2.2
 numpy==1.26.4
 psycopg2-binary
+
+# API
+fastapi
+uvicorn[standard]
+
+# Dashboard
+streamlit
+plotly
+requests
+
+# Map (опционально)
+folium
+streamlit-folium
