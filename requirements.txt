@@ -13,6 +13,11 @@ streamlit
 plotly
 requests
 
-# Map (опционально)
+# Map
 folium
 streamlit-folium
+
+# Google Drive loader
+gdown
+python-magic; sys_platform != "win32"
+python-magic-bin; sys_platform == "win32"

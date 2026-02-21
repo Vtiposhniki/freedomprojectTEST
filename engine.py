@@ -8,6 +8,21 @@ import pandas as pd
 from ai.geo import GeoNormalizer
 
 
+# ── Нормализованные варианты должности "Главный специалист" ──
+# ТЗ говорит "Глав спец", но в реальных данных могут быть вариации
+_CHIEF_POSITION_PATTERNS = (
+    "глав",        # Глав спец, Главный специалист, Главный спец
+    "chief",       # Chief specialist (ENG)
+    "гл. спец",    # сокращение
+    "гл спец",
+)
+
+
+def _is_chief(pos_norm: str) -> bool:
+    """Проверяет, является ли должность "Главным специалистом" в любой форме."""
+    return any(pos_norm.startswith(p) or p in pos_norm for p in _CHIEF_POSITION_PATTERNS)
+
+
 class FIREEngine:
     """
     Pure Routing Core (no NLP inside).
@@ -28,7 +43,9 @@ class FIREEngine:
         self.astana_office = self._find_office("астан")
         self.almaty_office = self._find_office("алмат")
 
-        self.rr_counters: Dict[Tuple[str, str, str, str], int] = {}
+        # Round Robin счётчики: ключ = (office, ai_lang) — достаточно гранулярно
+        # НЕ включаем ai_type и segment, иначе RR перестаёт работать как чередование
+        self.rr_counters: Dict[Tuple[str, str], int] = {}
         self.unknown_loc_counter = 0
 
         # cache: office -> (lat, lon)
@@ -108,6 +125,9 @@ class FIREEngine:
             .str.replace("специалист", "спец")
             .str.strip()
         )
+
+        # Флаг "главный специалист" через робастную функцию
+        df["is_chief"] = df["pos_norm"].apply(_is_chief)
 
         df["skills_set"] = df["skills"].apply(self._parse_skills)
         return df
@@ -223,10 +243,9 @@ class FIREEngine:
         if segment in ("VIP", "PRIORITY"):
             subset = subset[subset["skills_set"].apply(lambda s: "VIP" in s)]
 
-        # Только Главный специалист — startswith точно не захватывает
-        # "Ведущий спец" или просто "Спец"
+        # Только Главный специалист — используем робастный флаг is_chief
         if ai_type == "Смена данных":
-            subset = subset[subset["pos_norm"].str.startswith("глав")]
+            subset = subset[subset["is_chief"]]
 
         if ai_lang in ("KZ", "ENG"):
             subset = subset[subset["skills_set"].apply(lambda s: ai_lang in s)]
@@ -245,7 +264,13 @@ class FIREEngine:
         return city_lat, city_lon
 
     def _select_manager(self, subset: pd.DataFrame, rr_key: tuple) -> pd.Series:
-        """Round-robin выбор из топ-2 менеджеров по нагрузке."""
+        """
+        Round-Robin выбор из топ-2 менеджеров по нагрузке.
+
+        ВАЖНО: rr_key = (office, ai_lang) — НЕ включаем ai_type/segment,
+        иначе для каждого типа обращения будет отдельный счётчик и реального
+        чередования между менеджерами не происходит.
+        """
         subset = subset.sort_values(["load", "name"], kind="mergesort")
         top_2 = subset.head(2)
         rr_idx = self.rr_counters.get(rr_key, 0)
@@ -278,7 +303,6 @@ class FIREEngine:
         lat, lon = self._get_ticket_coords(ticket)
 
         if lat is None or lon is None:
-            # Нет координат — берём Астану как резервный офис
             fallback_office = self.astana_office
             if fallback_office == current_office:
                 fallback_office = self.almaty_office
@@ -286,9 +310,10 @@ class FIREEngine:
             pool = self.managers[self.managers["office"] == fallback_office].copy()
             subset = self._apply_filters(pool, segment, ai_type, ai_lang)
             if subset.empty:
-                subset = pool  # без фильтров
+                subset = pool
             if not subset.empty:
-                selected = self._select_manager(subset, ("escalation", fallback_office, ai_type, ai_lang))
+                rr_key = (fallback_office, ai_lang)
+                selected = self._select_manager(subset, rr_key)
                 return selected, fallback_office, None
             return None, None, None
 
@@ -301,7 +326,7 @@ class FIREEngine:
             pool = self.managers[self.managers["office"] == office].copy()
             subset = self._apply_filters(pool, segment, ai_type, ai_lang)
             if not subset.empty:
-                rr_key = ("escalation_filtered", office, ai_type, ai_lang)
+                rr_key = (office, ai_lang)
                 selected = self._select_manager(subset, rr_key)
                 return selected, office, dist
 
@@ -311,7 +336,7 @@ class FIREEngine:
                 continue
             pool = self.managers[self.managers["office"] == office].copy()
             if not pool.empty:
-                rr_key = ("escalation_any", office, ai_type, ai_lang)
+                rr_key = (office, ai_lang)
                 selected = self._select_manager(pool, rr_key)
                 return selected, office, dist
 
@@ -354,7 +379,8 @@ class FIREEngine:
 
             # ── Менеджер найден в своём офисе ──────────────────────
             if not subset.empty:
-                rr_key = (office, segment, ai_type, ai_lang)
+                # RR-ключ = (office, ai_lang) — чтобы реальное чередование работало
+                rr_key = (office, ai_lang)
                 selected = self._select_manager(subset, rr_key)
                 manager_name = selected["name"]
                 self.managers.at[selected.name, "load"] += 1

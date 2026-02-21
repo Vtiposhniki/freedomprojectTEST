@@ -354,6 +354,16 @@ hr {{ border-color: rgba(255,75,43,0.15) !important; }}
     font-family: 'Space Mono', monospace !important; letter-spacing: 1px;
     text-transform: uppercase; margin-bottom: 1.5rem;
 }}
+
+/* ── CHART БЛОК В ЧАТЕ ── */
+.chart-reveal {{
+    background: rgba(13,13,26,0.8);
+    border: 1px solid rgba(255,75,43,0.2);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    margin-top: 1rem;
+    animation: pageFadeIn 0.2s ease-out both;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -411,6 +421,107 @@ def plotly_dark(fig, height=350):
 
 
 # ─────────────────────────────────────────────
+# ОПРЕДЕЛЕНИЕ ТИПА ГРАФИКА ПО ВОПРОСУ
+# ─────────────────────────────────────────────
+
+def detect_chart_type(question: str):
+    """Определяет нужный график по ключевым словам вопроса."""
+    q = question.lower()
+    if any(w in q for w in ["тип", "категори", "вид обращени", "типам", "типов"]):
+        return ("type", "Распределение по типам обращений")
+    if any(w in q for w in ["офис", "город", "городам", "офисам", "регион"]):
+        return ("office", "Распределение по офисам")
+    if any(w in q for w in ["тональност", "сентимент", "sentiment", "негатив", "позитив", "настроени"]):
+        return ("sentiment", "Распределение тональности")
+    if any(w in q for w in ["менеджер", "нагрузк", "перегружен", "загружен", "сотрудник"]):
+        return ("manager", "Нагрузка менеджеров")
+    if any(w in q for w in ["язык", "lang", "языкам", "kz", "eng", "рус"]):
+        return ("lang", "Распределение по языкам обращений")
+    if any(w in q for w in ["приоритет", "priority", "срочност", "приоритетам"]):
+        return ("priority", "Распределение по приоритетам")
+    if any(w in q for w in ["эскалаци", "escalat"]):
+        return ("office", "Эскалации по офисам")
+    return None
+
+
+# ─────────────────────────────────────────────
+# РЕНДЕР ГРАФИКА ДЛЯ AI-ЧАТА
+# ─────────────────────────────────────────────
+
+def render_chat_chart(chart_type: str, chart_title: str):
+    st.markdown('<div class="chart-reveal">', unsafe_allow_html=True)
+    section_title(f"📊 {chart_title}")
+
+    if chart_type == "type":
+        data = fetch("/stats/by_type") or []
+        if data:
+            df_c = pd.DataFrame(data)
+            fig = px.bar(df_c, x="count", y="ai_type", orientation="h",
+                         color="avg_priority",
+                         color_continuous_scale=["#1a1a2e", "#FF416C", "#FF4B2B"],
+                         labels={"count": "Тикетов", "ai_type": "", "avg_priority": "Приоритет"},
+                         text="count")
+            fig.update_traces(textposition="outside", textfont_color=COLORS["text"])
+            st.plotly_chart(plotly_dark(fig, 320), use_container_width=True)
+
+    elif chart_type == "office":
+        data = fetch("/stats/by_office") or []
+        if data:
+            df_c = pd.DataFrame(data)
+            fig = px.bar(df_c, x="office", y="tickets",
+                         color="escalations",
+                         color_continuous_scale=[[0, "#16213E"], [1, "#FF4B2B"]],
+                         labels={"tickets": "Тикетов", "office": "", "escalations": "Эскалации"},
+                         text="tickets")
+            fig.update_traces(textposition="outside", textfont_color=COLORS["text"])
+            fig.update_xaxes(tickangle=-30)
+            st.plotly_chart(plotly_dark(fig, 320), use_container_width=True)
+
+    elif chart_type == "sentiment":
+        data = fetch("/stats/by_sentiment") or []
+        if data:
+            df_c = pd.DataFrame(data)
+            fig = px.pie(df_c, values="count", names="sentiment",
+                         color="sentiment", color_discrete_map=SENTIMENT_COLORS, hole=0.55)
+            fig.update_traces(textinfo="percent+label", textfont_size=12)
+            st.plotly_chart(plotly_dark(fig, 320), use_container_width=True)
+
+    elif chart_type == "manager":
+        data = fetch("/managers/load") or []
+        if data:
+            df_c = pd.DataFrame(data).head(10)
+            fig = px.bar(df_c, x="tickets", y="manager", orientation="h",
+                         color="office",
+                         color_discrete_sequence=px.colors.qualitative.Bold,
+                         labels={"tickets": "Тикетов", "manager": ""},
+                         text="tickets")
+            fig.update_traces(textposition="outside", textfont_color=COLORS["text"])
+            st.plotly_chart(plotly_dark(fig, 400), use_container_width=True)
+
+    elif chart_type == "lang":
+        data = fetch("/stats/by_lang") or []
+        if data:
+            df_c = pd.DataFrame(data)
+            fig = px.pie(df_c, values="count", names="ai_lang",
+                         color_discrete_sequence=[COLORS["primary"], COLORS["accent"], COLORS["pos"]],
+                         hole=0.4)
+            fig.update_traces(textinfo="percent+label", textfont_size=12)
+            st.plotly_chart(plotly_dark(fig, 300), use_container_width=True)
+
+    elif chart_type == "priority":
+        data = fetch("/stats/by_priority") or []
+        if data:
+            df_c = pd.DataFrame(data)
+            fig = px.bar(df_c, x="priority", y="count",
+                         color="count",
+                         color_continuous_scale=["#16213E", "#F7971E", "#FF4B2B"],
+                         labels={"priority": "Приоритет", "count": "Тикетов"})
+            st.plotly_chart(plotly_dark(fig, 300), use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
 # НАВИГАЦИЯ — ТОПБАР
 # ─────────────────────────────────────────────
 
@@ -426,14 +537,12 @@ NAV = [
     ("AI Аналитик", "AI Аналитик"),
 ]
 
-# Health статус
 health = fetch("/health")
 db_c   = COLORS["pos"] if health and health.get("db")  else COLORS["neg"]
 llm_c  = COLORS["pos"] if health and health.get("llm") else COLORS["neu"]
 db_dot = f'<span style="color:{db_c};">●</span> <span style="color:#555;font-size:0.7rem;">DB</span>'
 llm_dot= f'<span style="color:{llm_c};">●</span> <span style="color:#555;font-size:0.7rem;">LLM</span>'
 
-# Топбар: лого + статус слева, кнопки навигации справа
 logo_col, nav_col = st.columns([1, 4])
 
 with logo_col:
@@ -466,7 +575,6 @@ with nav_col:
 
 st.markdown('<hr style="margin:0 0 0.8rem 0;border-color:rgba(255,75,43,0.15);">', unsafe_allow_html=True)
 
-# Фильтры в одну строку
 filters_meta = fetch("/meta/filters") or {}
 offices    = ["Все"] + filters_meta.get("offices",   [])
 ai_types   = ["Все"] + filters_meta.get("ai_types",  [])
@@ -501,7 +609,6 @@ st.markdown("---")
 
 page = st.session_state.page
 
-# Skeleton при переходе
 if st.session_state.get("page_loading"):
     st.session_state.page_loading = False
     st.markdown(f"""
@@ -534,11 +641,11 @@ if page == "Обзор":
         st.stop()
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    kpi_card(c1, summary["total_tickets"],           "Всего тикетов")
+    kpi_card(c1, summary["total_tickets"],             "Всего тикетов")
     kpi_card(c2, f"{summary['escalation_rate_pct']}%", "Эскалаций")
-    kpi_card(c3, summary["avg_priority"],            "Ср. приоритет")
+    kpi_card(c3, summary["avg_priority"],              "Ср. приоритет")
     kpi_card(c4, f"{summary['negative_sentiment_pct']}%", "Негатив")
-    kpi_card(c5, summary["unique_managers"],         "Менеджеров")
+    kpi_card(c5, summary["unique_managers"],           "Менеджеров")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -665,7 +772,7 @@ elif page == "Тикеты":
                 c4,c5 = st.columns(2)
                 c4.markdown(f"**Офис:** {d.get('office','—')}  \n**Менеджер:** {d.get('manager','—')}  \n**Город:** {d.get('city','—')}")
                 c5.markdown(f"**Сегмент:** {d.get('segment','—')}  \n**Язык:** {d.get('ai_lang','—')}  \n**Маршрут:** {d.get('office_reason','—')}")
-                if d.get("summary"):       st.markdown(f"**Резюме:** {d['summary']}")
+                if d.get("summary"):        st.markdown(f"**Резюме:** {d['summary']}")
                 if d.get("recommendation"): st.info(f"Рекомендация: {d['recommendation']}")
     elif total_count == 0:
         st.info("Нет тикетов по выбранным фильтрам.")
@@ -726,7 +833,6 @@ elif page == "Карта":
 
         m = folium.Map(location=[48.0, 67.0], zoom_start=5, tiles="CartoDB dark_matter")
 
-        # ── Адреса точно из business_units.csv ──
         import re as _re
         _OFFICE_ADDR = {
             "актау":            "17-й микрорайон, Бизнес-центр «Urban», зд. 22",
@@ -756,30 +862,21 @@ elif page == "Карта":
                     key = key[len(pfx):].strip()
             return _OFFICE_ADDR.get(key, "")
 
-        # ── Офисы — маркеры с полным адресом ──
         for o in geo_offices:
             if not (o.get("lat") and o.get("lon")):
                 continue
-
             name    = o.get("name", "—")
             address = _addr(name, o.get("address", ""))
             lat     = o["lat"]
             lon     = o["lon"]
-
-            # Считаем тикеты этого офиса
             office_tickets = [t for t in geo_tickets if t.get("office") == name]
             neg_count = sum(1 for t in office_tickets if t.get("sentiment") == "NEG")
             esc_count = sum(1 for t in office_tickets if t.get("is_escalation"))
-
             popup_html = f"""
             <div style="font-family:Arial,sans-serif;min-width:200px;max-width:260px;">
                 <div style="font-size:14px;font-weight:700;color:#FF4B2B;
-                            border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:8px;">
-                    {name}
-                </div>
-                <div style="font-size:12px;color:#555;margin-bottom:8px;line-height:1.5;">
-                    {address}
-                </div>
+                            border-bottom:1px solid #eee;padding-bottom:6px;margin-bottom:8px;">{name}</div>
+                <div style="font-size:12px;color:#555;margin-bottom:8px;line-height:1.5;">{address}</div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
                     <div style="text-align:center;background:#f8f8f8;border-radius:4px;padding:4px;">
                         <div style="font-size:16px;font-weight:700;color:#333;">{len(office_tickets)}</div>
@@ -794,12 +891,9 @@ elif page == "Карта":
                         <div style="font-size:10px;color:#888;">эскал.</div>
                     </div>
                 </div>
-                <div style="font-size:10px;color:#aaa;margin-top:6px;">
-                    {lat:.4f}, {lon:.4f}
-                </div>
+                <div style="font-size:10px;color:#aaa;margin-top:6px;">{lat:.4f}, {lon:.4f}</div>
             </div>
             """
-
             folium.Marker(
                 [lat, lon],
                 popup=folium.Popup(popup_html, max_width=280),
@@ -807,14 +901,12 @@ elif page == "Карта":
                 icon=folium.Icon(color="red", icon="building", prefix="fa"),
             ).add_to(m)
 
-        # ── Тикеты — кружки с подробным попапом ──
         cmap = {"NEG": "red", "NEU": "orange", "POS": "green"}
         sentiment_ru = {"NEG": "Негатив", "NEU": "Нейтрал", "POS": "Позитив"}
 
         for t in geo_tickets:
             if not (t.get("lat") and t.get("lon")):
                 continue
-
             sentiment  = t.get("sentiment", "NEU")
             ai_type    = t.get("ai_type", "—")
             office     = t.get("office", "—")
@@ -823,18 +915,14 @@ elif page == "Карта":
             is_esc     = t.get("is_escalation", False)
             color      = cmap.get(sentiment, "orange")
             sent_ru    = sentiment_ru.get(sentiment, sentiment)
-
             priority_color = "#FF4B2B" if str(priority).isdigit() and int(priority) >= 8 else \
                              "#F7971E" if str(priority).isdigit() and int(priority) >= 5 else "#00C9A7"
-
             esc_badge = '<span style="background:#FF4B2B;color:white;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:4px;">ESC</span>' if is_esc else ""
-
             popup_html = f"""
             <div style="font-family:Arial,sans-serif;min-width:190px;max-width:240px;">
                 <div style="font-size:13px;font-weight:700;color:#333;
                             border-bottom:1px solid #eee;padding-bottom:5px;margin-bottom:7px;">
-                    {ai_type}{esc_badge}
-                </div>
+                    {ai_type}{esc_badge}</div>
                 <table style="font-size:12px;color:#555;width:100%;border-collapse:collapse;">
                     <tr><td style="padding:2px 0;color:#999;">Город</td>
                         <td style="padding:2px 0;font-weight:600;">{city}</td></tr>
@@ -847,22 +935,17 @@ elif page == "Карта":
                 </table>
             </div>
             """
-
             folium.CircleMarker(
                 [t["lat"], t["lon"]],
                 radius=7 if is_esc else 5,
-                color=color,
-                weight=2 if is_esc else 1,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.65,
+                color=color, weight=2 if is_esc else 1,
+                fill=True, fill_color=color, fill_opacity=0.65,
                 popup=folium.Popup(popup_html, max_width=260),
                 tooltip=f"{city} · {ai_type} · P{priority}",
             ).add_to(m)
 
         st_folium(m, width=None, height=580, returned_objects=[])
 
-        # Легенда
         col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns(5)
         for col, color, label in [
             (col_l1, "#FF4B2B", "Негатив"),
@@ -892,45 +975,21 @@ elif page == "Загрузка":
     st.markdown('<div class="fire-header">Загрузка CSV</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Импорт данных · тикеты · менеджеры · офисы</div>', unsafe_allow_html=True)
 
-    # ── Инструкция — чистый HTML без expander ──
     st.markdown("""
-    <details style="
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,75,43,0.2);
-        border-radius: 10px;
-        padding: 0;
-        margin-bottom: 1rem;
-        overflow: hidden;
-    ">
-        <summary style="
-            padding: 12px 18px;
-            cursor: pointer;
-            font-family: 'Space Mono', monospace;
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: #888;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            list-style: none;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            user-select: none;
-        ">
+    <details style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,75,43,0.2);
+                    border-radius:10px;padding:0;margin-bottom:1rem;overflow:hidden;">
+        <summary style="padding:12px 18px;cursor:pointer;font-family:'Space Mono',monospace;
+                        font-size:0.78rem;font-weight:700;color:#888;letter-spacing:1.5px;
+                        text-transform:uppercase;list-style:none;display:flex;
+                        align-items:center;gap:8px;user-select:none;">
             <span style="color:#FF4B2B;font-size:1rem;">▸</span>
             ТРЕБОВАНИЯ К ФАЙЛАМ
         </summary>
-        <div style="
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 12px;
-            padding: 0 18px 16px 18px;
-        ">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:0 18px 16px 18px;">
             <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
                 <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
                             font-weight:700;letter-spacing:1px;margin-bottom:10px;">tickets.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;
-                            color:#666;line-height:2;">
+                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
                     GUID клиента<br>Пол клиента<br>Дата рождения<br>Описание<br>
                     Вложения<br>Сегмент клиента<br>Страна<br>Область<br>
                     Населённый пункт<br>Улица<br>Дом
@@ -939,17 +998,14 @@ elif page == "Загрузка":
             <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
                 <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
                             font-weight:700;letter-spacing:1px;margin-bottom:10px;">managers.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;
-                            color:#666;line-height:2;">
-                    ФИО<br>Должность<br>Офис<br>Навыки<br>
-                    Количество обращений в работе
+                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
+                    ФИО<br>Должность<br>Офис<br>Навыки<br>Количество обращений в работе
                 </div>
             </div>
             <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
                 <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
                             font-weight:700;letter-spacing:1px;margin-bottom:10px;">business_units.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;
-                            color:#666;line-height:2;">
+                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
                     Офис<br>Адрес
                 </div>
             </div>
@@ -959,18 +1015,10 @@ elif page == "Загрузка":
 
     st.markdown("---")
 
-    # ── Загрузчики ──
     col1, col2, col3 = st.columns(3)
-
     with col1:
         st.markdown('<div class="section-title">Тикеты</div>', unsafe_allow_html=True)
-        tickets_file = st.file_uploader(
-            "tickets.csv",
-            type=["csv"],
-            key="upload_tickets",
-            label_visibility="collapsed",
-            help="CSV файл с обращениями клиентов"
-        )
+        tickets_file = st.file_uploader("tickets.csv", type=["csv"], key="upload_tickets", label_visibility="collapsed")
         if tickets_file:
             try:
                 df_preview = pd.read_csv(tickets_file, nrows=5, encoding="utf-8-sig")
@@ -982,13 +1030,7 @@ elif page == "Загрузка":
 
     with col2:
         st.markdown('<div class="section-title">Менеджеры</div>', unsafe_allow_html=True)
-        managers_file = st.file_uploader(
-            "managers.csv",
-            type=["csv"],
-            key="upload_managers",
-            label_visibility="collapsed",
-            help="CSV файл со списком менеджеров"
-        )
+        managers_file = st.file_uploader("managers.csv", type=["csv"], key="upload_managers", label_visibility="collapsed")
         if managers_file:
             try:
                 df_preview = pd.read_csv(managers_file, nrows=5, encoding="utf-8-sig")
@@ -1000,13 +1042,7 @@ elif page == "Загрузка":
 
     with col3:
         st.markdown('<div class="section-title">Офисы</div>', unsafe_allow_html=True)
-        units_file = st.file_uploader(
-            "business_units.csv",
-            type=["csv"],
-            key="upload_units",
-            label_visibility="collapsed",
-            help="CSV файл с бизнес-единицами / офисами"
-        )
+        units_file = st.file_uploader("business_units.csv", type=["csv"], key="upload_units", label_visibility="collapsed")
         if units_file:
             try:
                 df_preview = pd.read_csv(units_file, nrows=5, encoding="utf-8-sig")
@@ -1018,20 +1054,12 @@ elif page == "Загрузка":
 
     st.markdown("---")
 
-    # ── Предпросмотр ──
     if any([tickets_file, managers_file, units_file]):
         section_title("Предпросмотр данных")
-        tab_names = []
-        tab_files = []
-        if tickets_file:
-            tab_names.append("Тикеты")
-            tab_files.append(tickets_file)
-        if managers_file:
-            tab_names.append("Менеджеры")
-            tab_files.append(managers_file)
-        if units_file:
-            tab_names.append("Офисы")
-            tab_files.append(units_file)
+        tab_names, tab_files = [], []
+        if tickets_file:  tab_names.append("Тикеты");    tab_files.append(tickets_file)
+        if managers_file: tab_names.append("Менеджеры"); tab_files.append(managers_file)
+        if units_file:    tab_names.append("Офисы");     tab_files.append(units_file)
 
         tabs = st.tabs(tab_names)
         for tab, f in zip(tabs, tab_files):
@@ -1048,25 +1076,16 @@ elif page == "Загрузка":
 
     st.markdown("---")
 
-    # ── Кнопка запуска ──
     all_ready = tickets_file and managers_file and units_file
-    
     col_btn, col_info = st.columns([1, 2])
     with col_btn:
-        run_disabled = not all_ready
         if not all_ready:
             missing = []
             if not tickets_file:  missing.append("tickets.csv")
             if not managers_file: missing.append("managers.csv")
             if not units_file:    missing.append("business_units.csv")
             st.markdown(f'<div class="upload-step step-wait">Ожидание: {", ".join(missing)}</div>', unsafe_allow_html=True)
-
-        run_btn = st.button(
-            "Запустить импорт и маршрутизацию",
-            disabled=run_disabled,
-            use_container_width=True,
-            key="run_import"
-        )
+        run_btn = st.button("Запустить импорт и маршрутизацию", disabled=not all_ready, use_container_width=True, key="run_import")
 
     with col_info:
         st.markdown("""
@@ -1081,13 +1100,10 @@ elif page == "Загрузка":
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Выполнение импорта ──
     if run_btn and all_ready:
         import tempfile, os, subprocess, sys
-
         st.markdown("---")
         section_title("Выполнение")
-
         log_container = st.container()
 
         def step(msg, status="run"):
@@ -1095,33 +1111,25 @@ elif page == "Загрузка":
 
         with st.spinner("Идёт импорт..."):
             try:
-                # Сохраняем файлы во временную директорию
                 with tempfile.TemporaryDirectory() as tmpdir:
                     t_path = os.path.join(tmpdir, "tickets.csv")
                     m_path = os.path.join(tmpdir, "managers.csv")
                     u_path = os.path.join(tmpdir, "business_units.csv")
 
-                    tickets_file.seek(0)
-                    managers_file.seek(0)
-                    units_file.seek(0)
-
+                    tickets_file.seek(0); managers_file.seek(0); units_file.seek(0)
                     with open(t_path, "wb") as f: f.write(tickets_file.read())
                     with open(m_path, "wb") as f: f.write(managers_file.read())
                     with open(u_path, "wb") as f: f.write(units_file.read())
 
                     step("&#10003; Файлы сохранены во временную директорию", "ok")
-
-                    # Шаг 1: init_db + load_csv
                     step("&#9654; Инициализация БД и загрузка данных...", "run")
+
                     try:
-                        # Добавляем корень проекта в sys.path
                         project_root = os.path.dirname(os.path.abspath(__file__))
                         if project_root not in sys.path:
                             sys.path.insert(0, project_root)
 
                         from db import init_db, load_csv, get_connection
-
-                        # Очищаем таблицы
                         conn = get_connection()
                         with conn.cursor() as cur:
                             cur.execute("TRUNCATE TABLE assignments  RESTART IDENTITY CASCADE;")
@@ -1129,9 +1137,7 @@ elif page == "Загрузка":
                             cur.execute("TRUNCATE TABLE tickets      RESTART IDENTITY CASCADE;")
                             cur.execute("TRUNCATE TABLE managers     RESTART IDENTITY CASCADE;")
                             cur.execute("TRUNCATE TABLE offices      RESTART IDENTITY CASCADE;")
-                        conn.commit()
-                        conn.close()
-
+                        conn.commit(); conn.close()
                         init_db()
                         load_csv(tickets_path=t_path, managers_path=m_path, units_path=u_path)
                         step("&#10003; БД заполнена", "ok")
@@ -1139,26 +1145,20 @@ elif page == "Загрузка":
                         step(f"&#10007; Ошибка БД: {e}", "err")
                         st.stop()
 
-                    # Шаг 2: AI enrichment + routing через run.py
                     step("&#9654; Запуск AI-обогащения и маршрутизации...", "run")
-                    step("&#9432; Это может занять 1-3 минуты в зависимости от количества тикетов", "wait")
+                    step("&#9432; Это может занять 1-3 минуты", "wait")
 
                     try:
                         result = subprocess.run(
                             [sys.executable, os.path.join(project_root, "run.py")],
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                            cwd=project_root,
+                            capture_output=True, text=True, timeout=300, cwd=project_root,
                         )
                         if result.returncode == 0:
                             step("&#10003; Маршрутизация завершена успешно", "ok")
-                            # Показываем последние строки вывода
-                            output_lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
-                            for line in output_lines[-6:]:
+                            for line in [l for l in result.stdout.strip().split("\n") if l.strip()][-6:]:
                                 log_container.markdown(f'<div style="font-family:\'Space Mono\',monospace;font-size:0.7rem;color:#555;padding:2px 12px;">{line}</div>', unsafe_allow_html=True)
                         else:
-                            step(f"&#10007; run.py завершился с ошибкой", "err")
+                            step("&#10007; run.py завершился с ошибкой", "err")
                             if result.stderr:
                                 log_container.code(result.stderr[-1000:], language="text")
                     except subprocess.TimeoutExpired:
@@ -1211,8 +1211,6 @@ elif page == "AI Аналитик":
         font-family:'Syne',sans-serif;font-size:0.88rem;
         color:#DDDDDD!important;line-height:1.6;}
     .msg-ai-bubble strong,.msg-ai-bubble b{color:#FFFFFF!important;}
-    .msg-src{font-family:'Space Mono',monospace;font-size:0.58rem;
-        color:#2a2a2a!important;margin-top:4px;padding-left:2px;}
     .chat-empty{display:flex;flex-direction:column;align-items:center;
         justify-content:center;padding:3rem;gap:10px;}
     .quick-btn .stButton > button{
@@ -1234,14 +1232,16 @@ elif page == "AI Аналитик":
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="fire-header">AI Аналитик</div>', unsafe_allow_html=True)
-    st.markdown('<div class="page-sub">Аналитика данных · задайте вопрос на русском</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-sub">Аналитика данных · задайте вопрос · графики по запросу</div>', unsafe_allow_html=True)
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "llm_history" not in st.session_state:
         st.session_state.llm_history = []
+    if "chat_chart" not in st.session_state:
+        st.session_state.chat_chart = None
 
-    # Быстрые вопросы
+    # ── Быстрые вопросы ──
     suggested = [
         "Сколько всего тикетов и какой процент эскалаций?",
         "Какой офис обрабатывает больше всего обращений?",
@@ -1262,7 +1262,7 @@ elif page == "AI Аналитик":
     st.markdown("<br>", unsafe_allow_html=True)
     section_title("Чат с данными")
 
-    # История чата
+    # ── История чата ──
     if st.session_state.chat_history:
         msgs_html = '<div class="chat-wrap">'
         for msg in st.session_state.chat_history:
@@ -1299,10 +1299,15 @@ elif page == "AI Аналитик":
         </div>
         ''', unsafe_allow_html=True)
 
-    # Форма ввода
+    # ── Динамический график под чатом ──
+    if st.session_state.chat_chart:
+        chart_type, chart_title = st.session_state.chat_chart
+        render_chat_chart(chart_type, chart_title)
+
+    # ── Форма ввода ──
     with st.form("chat_form", clear_on_submit=True):
         user_input = st.text_input(
-            "q", placeholder="Например: Сколько тикетов в Астане с негативным сентиментом?",
+            "q", placeholder="Например: Распределение тональности по городам",
             label_visibility="collapsed"
         )
         sc, cc = st.columns([5, 1])
@@ -1317,15 +1322,22 @@ elif page == "AI Аналитик":
     if cleared:
         st.session_state.chat_history = []
         st.session_state.llm_history  = []
+        st.session_state.chat_chart   = None
         st.rerun()
 
     if submitted and user_input.strip():
         st.session_state.chat_history.append({"role": "user", "content": user_input})
+
         with st.spinner("Анализирую..."):
             result = post_api("/ai/chat", {"question": user_input, "history": st.session_state.llm_history[-6:]})
+
         answer = result.get("answer", "Нет ответа")
         source = result.get("source", "unknown")
         st.session_state.chat_history.append({"role": "assistant", "content": answer, "source": source})
         st.session_state.llm_history.append({"role": "user", "content": user_input})
         st.session_state.llm_history.append({"role": "assistant", "content": answer})
+
+        # ── Определяем нужен ли график ──
+        st.session_state.chat_chart = detect_chart_type(user_input)
+
         st.rerun()
