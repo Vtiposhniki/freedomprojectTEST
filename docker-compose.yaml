@@ -13,13 +13,13 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Скрипт schema.sql выполнится автоматически при первом запуске пустой БД
       - ./schema.sql:/docker-entrypoint-initdb.d/init.sql
 
   api:
     build: .
     container_name: fire_engine_api
     restart: always
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
@@ -28,14 +28,44 @@ services:
       - DB_NAME=fire_db
       - DB_USER=postgres
       - DB_PASSWORD=secret_password
-      # Подтягиваем ключ из .env файла на хосте
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     depends_on:
       - db
     volumes:
-      # Мапим папку out, чтобы результаты (analysis_report.json) сохранялись на твой ПК
-      - ./out:/app/out
+      - .:/app
 
-volumes:
-  postgres_data:
+  dashboard:
+    build: .
+    container_name: fire_engine_dashboard
+    restart: always
+    command: streamlit run dashboard.py --server.address=0.0.0.0 --server.port=8501
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=fire_db
+      - DB_USER=postgres
+      - DB_PASSWORD=secret_password
+      - API_URL=http://api:8000
+    depends_on:
+      - db
+      - api
+    volumes:
+      - .:/app
+
+  # --- НОВЫЙ БЛОК ДЛЯ NGROK ---
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: fire_engine_ngrok
+    restart: always
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    # Указываем ngrok пробросить порт 8501 контейнера dashboard
+    command: "http dashboard:8501"
+    ports:
+      # Открываем локальный порт 4040 для просмотра статистики ngrok
+      - "4040:4040"
+    depends_on:
+      - dashboard
