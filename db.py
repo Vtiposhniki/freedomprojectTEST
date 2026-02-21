@@ -57,18 +57,13 @@ def load_csv(
     managers_path = "managers.csv",
     units_path    = "business_units.csv",
 ):
-    """
-    Читает три CSV файла и загружает их в БД.
-    Запускать один раз. При повторном запуске дубли игнорируются.
-    """
     from ai.geo import GeoNormalizer
     geo = GeoNormalizer()
 
-    tickets_df  = pd.read_csv(tickets_path)
-    managers_df = pd.read_csv(managers_path)
-    units_df    = pd.read_csv(units_path)
+    tickets_df  = pd.read_csv(tickets_path,  encoding="utf-8-sig")
+    managers_df = pd.read_csv(managers_path, encoding="utf-8-sig")
+    units_df    = pd.read_csv(units_path,    encoding="utf-8-sig")
 
-    # нормализуем заголовки
     tickets_df.columns  = tickets_df.columns.str.strip().str.lower().str.replace("ё", "е")
     managers_df.columns = managers_df.columns.str.strip().str.lower().str.replace("ё", "е")
     units_df.columns    = units_df.columns.str.strip().str.lower().str.replace("ё", "е")
@@ -115,7 +110,6 @@ def load_csv(
                 if not guid:
                     continue
 
-                # дата рождения
                 bd = row.get("дата рождения", None)
                 birth_date = None
                 if pd.notna(bd):
@@ -153,7 +147,7 @@ def load_csv(
 
 
 # -------------------------------------------------------
-# ЧТЕНИЕ ИЗ БД → DataFrame  (используется в run.py)
+# ЧТЕНИЕ ИЗ БД → DataFrame
 # -------------------------------------------------------
 
 def get_tickets_df() -> pd.DataFrame:
@@ -210,28 +204,53 @@ def get_offices_df() -> pd.DataFrame:
 # -------------------------------------------------------
 
 def save_results(result_df: pd.DataFrame):
-    """Записать итоговые assignments в БД."""
+    """
+    Записать итоговые assignments в БД.
+    Перед вставкой очищает предыдущие результаты для тех же тикетов,
+    чтобы не было дублей при повторном запуске run.py.
+    """
     conn = get_connection()
     saved = 0
     try:
         with conn.cursor() as cur:
 
-            # Загружаем маппинги из БД
+            # Загружаем маппинги
             cur.execute("SELECT name, id FROM offices")
             office_map = {row[0]: row[1] for row in cur.fetchall()}
 
             cur.execute("SELECT name, id FROM managers")
             manager_map = {row[0]: row[1] for row in cur.fetchall()}
 
+            # Собираем ticket_id для всех guid в текущем батче
+            guids = result_df["guid"].astype(str).tolist()
+            cur.execute(
+                "SELECT guid, id FROM tickets WHERE guid = ANY(%s)",
+                (guids,)
+            )
+            ticket_id_map = {row[0]: row[1] for row in cur.fetchall()}
+
+            # Удаляем старые assignments и ai_analysis для этих тикетов
+            # (ON DELETE CASCADE не работает в обратную сторону, удаляем вручную)
+            ticket_ids = list(ticket_id_map.values())
+            if ticket_ids:
+                cur.execute(
+                    "DELETE FROM assignments WHERE ticket_id = ANY(%s)",
+                    (ticket_ids,)
+                )
+                cur.execute(
+                    "DELETE FROM ai_analysis WHERE ticket_id = ANY(%s)",
+                    (ticket_ids,)
+                )
+                deleted = cur.rowcount
+                print(f"[DB] Cleared previous results for {len(ticket_ids)} tickets")
+
+            # Вставляем новые результаты
             for _, row in result_df.iterrows():
                 guid = str(row["guid"])
-
-                # ticket_id
-                cur.execute("SELECT id FROM tickets WHERE guid = %s", (guid,))
-                res = cur.fetchone()
-                if not res:
+                ticket_id = ticket_id_map.get(guid)
+                if not ticket_id:
+                    print(f"[DB] WARN: ticket not found for guid={guid}, skipping")
                     continue
-                ticket_id = res[0]
 
                 # ai_analysis
                 cur.execute("""

@@ -30,7 +30,7 @@ class FIREEngine:
         self.rr_counters: Dict[Tuple[str, str, str, str], int] = {}
         self.unknown_loc_counter = 0
 
-        # cache: office -> (lat, lon) if known
+        # cache: office -> (lat, lon)
         self._office_coords: Dict[str, Tuple[float, float]] = {}
         for off in self.units["office"].tolist():
             lat, lon = self.geo.geocode(off)
@@ -62,8 +62,6 @@ class FIREEngine:
         if missing:
             raise ValueError(f"Tickets CSV missing columns: {missing}")
 
-        # Optional: lat/lon (already enriched by AI layer)
-        # If absent, we'll geocode by city inside get_office().
         if "lat" in df.columns:
             df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
         if "lon" in df.columns:
@@ -142,9 +140,6 @@ class FIREEngine:
         return found[0] if len(found) else pattern.capitalize()
 
     def _nearest_office_by_coords(self, lat: float, lon: float) -> Tuple[Optional[str], Optional[float]]:
-        """
-        Return nearest office name and distance_km by haversine using cached office coords.
-        """
         if not self._office_coords:
             return None, None
 
@@ -162,20 +157,23 @@ class FIREEngine:
 
         return best_office, round(best_dist, 2)
 
+    def _offices_sorted_by_distance(self, lat: float, lon: float) -> List[Tuple[str, float]]:
+        """Вернуть все офисы отсортированные по расстоянию от точки (lat, lon)."""
+        result = []
+        for office, (olat, olon) in self._office_coords.items():
+            d = self.geo.distance_km(lat, lon, olat, olon)
+            result.append((office, round(d, 2)))
+        result.sort(key=lambda x: x[1])
+        return result
+
     def get_office(self, ticket: pd.Series) -> Tuple[str, str, Optional[float]]:
         """
         Decide office and return (office, reason, distance_km).
-        reason:
-            by_distance  - chosen by coordinates/haversine
-            by_match     - chosen by substring match in office name
-            50_50        - fallback for unknown location
-            default      - fallback to astana when kz but unknown city match
         """
         country = str(ticket.get("country", "")).lower().strip()
         city_raw = str(ticket.get("city", "")).strip()
         city_norm = self.geo.normalise(city_raw)
 
-        # 1) If ticket has coordinates -> choose nearest office by distance
         lat = ticket.get("lat")
         lon = ticket.get("lon")
 
@@ -184,14 +182,12 @@ class FIREEngine:
             if nearest:
                 return nearest, "by_distance", dist
 
-        # 2) If no coords -> try geocode by city
         city_lat, city_lon = self.geo.geocode(city_norm)
         if city_lat is not None and city_lon is not None:
             nearest, dist = self._nearest_office_by_coords(float(city_lat), float(city_lon))
             if nearest:
                 return nearest, "by_distance", dist
 
-        # 3) substring match office name in city text
         matched_office: Optional[str] = None
         if city_norm:
             for off in self.units["office"].tolist():
@@ -202,7 +198,6 @@ class FIREEngine:
         if matched_office:
             return matched_office, "by_match", None
 
-        # 4) 50/50 for unknown or non-KZ
         is_kz = ("kaz" in country) or ("каз" in country)
         is_unknown = country in ["", "nan", "none"]
 
@@ -211,8 +206,113 @@ class FIREEngine:
             self.unknown_loc_counter += 1
             return office, "50_50", None
 
-        # default for KZ but no match
         return self.astana_office, "default", None
+
+    # ============================================================
+    # FILTER HELPERS
+    # ============================================================
+
+    def _apply_filters(self, pool: pd.DataFrame, segment: str, ai_type: str, ai_lang: str) -> pd.DataFrame:
+        """Применить VIP / chief / language фильтры к пулу менеджеров."""
+        subset = pool
+
+        if segment in ["VIP", "PRIORITY"]:
+            subset = subset[subset["skills_set"].apply(lambda s: "VIP" in s)]
+
+        if ai_type == "Смена данных":
+            subset = subset[
+                subset["pos_norm"].str.contains("глав") &
+                subset["pos_norm"].str.contains("спец")
+            ]
+
+        if ai_lang in ["KZ", "ENG"]:
+            subset = subset[subset["skills_set"].apply(lambda s: ai_lang in s)]
+
+        return subset
+
+    def _get_ticket_coords(self, ticket: pd.Series) -> Tuple[Optional[float], Optional[float]]:
+        """Получить координаты тикета (из lat/lon или геокодирования города)."""
+        lat = ticket.get("lat")
+        lon = ticket.get("lon")
+        if pd.notna(lat) and pd.notna(lon):
+            return float(lat), float(lon)
+
+        city_norm = self.geo.normalise(str(ticket.get("city", "")))
+        city_lat, city_lon = self.geo.geocode(city_norm)
+        return city_lat, city_lon
+
+    def _select_manager(self, subset: pd.DataFrame, rr_key: tuple) -> pd.Series:
+        """Round-robin выбор из топ-2 менеджеров по нагрузке."""
+        subset = subset.sort_values(["load", "name"], kind="mergesort")
+        top_2 = subset.head(2)
+        rr_idx = self.rr_counters.get(rr_key, 0)
+        selected = top_2.iloc[rr_idx % len(top_2)]
+        self.rr_counters[rr_key] = rr_idx + 1
+        return selected
+
+    # ============================================================
+    # NEAREST OFFICE ESCALATION
+    # ============================================================
+
+    def _find_nearest_manager(
+        self,
+        ticket: pd.Series,
+        current_office: str,
+        segment: str,
+        ai_type: str,
+        ai_lang: str,
+    ) -> Tuple[Optional[pd.Series], Optional[str], Optional[float]]:
+        """
+        Ищет подходящего менеджера в ближайших офисах (кроме текущего).
+
+        Стратегия:
+          1. Перебираем офисы по возрастанию расстояния от тикета
+          2. Сначала пробуем с полными фильтрами (VIP + язык + должность)
+          3. Если не нашли — берём любого менеджера из ближайшего офиса
+
+        Возвращает (manager_row, office_name, distance_km) или (None, None, None)
+        """
+        lat, lon = self._get_ticket_coords(ticket)
+
+        if lat is None or lon is None:
+            # Нет координат — берём Астану как резервный офис
+            fallback_office = self.astana_office
+            if fallback_office == current_office:
+                fallback_office = self.almaty_office
+
+            pool = self.managers[self.managers["office"] == fallback_office].copy()
+            subset = self._apply_filters(pool, segment, ai_type, ai_lang)
+            if subset.empty:
+                subset = pool  # без фильтров
+            if not subset.empty:
+                selected = self._select_manager(subset, ("escalation", fallback_office, ai_type, ai_lang))
+                return selected, fallback_office, None
+            return None, None, None
+
+        offices_by_dist = self._offices_sorted_by_distance(lat, lon)
+
+        # Проход 1: с полными фильтрами
+        for office, dist in offices_by_dist:
+            if office == current_office:
+                continue
+            pool = self.managers[self.managers["office"] == office].copy()
+            subset = self._apply_filters(pool, segment, ai_type, ai_lang)
+            if not subset.empty:
+                rr_key = ("escalation_filtered", office, ai_type, ai_lang)
+                selected = self._select_manager(subset, rr_key)
+                return selected, office, dist
+
+        # Проход 2: без фильтров (любой менеджер из ближайшего офиса)
+        for office, dist in offices_by_dist:
+            if office == current_office:
+                continue
+            pool = self.managers[self.managers["office"] == office].copy()
+            if not pool.empty:
+                rr_key = ("escalation_any", office, ai_type, ai_lang)
+                selected = self._select_manager(pool, rr_key)
+                return selected, office, dist
+
+        return None, None, None
 
     # ============================================================
     # DISTRIBUTION
@@ -222,10 +322,10 @@ class FIREEngine:
         results: List[Dict[str, Any]] = []
 
         for _, ticket in self.tickets.iterrows():
-            ai_type = ticket["ai_type"]
-            ai_lang = ticket["ai_lang"]
-            priority = ticket["priority"]
-            segment = ticket["segment"]
+            ai_type   = ticket["ai_type"]
+            ai_lang   = ticket["ai_lang"]
+            priority  = ticket["priority"]
+            segment   = ticket["segment"]
 
             office, office_reason, distance_km = self.get_office(ticket)
 
@@ -237,76 +337,87 @@ class FIREEngine:
                 "initial_pool": int(len(pool)),
             }
 
-            subset = pool
+            subset = self._apply_filters(pool, segment, ai_type, ai_lang)
 
-            # VIP / PRIORITY filter
+            # Трейс фильтров
             if segment in ["VIP", "PRIORITY"]:
-                subset = subset[subset["skills_set"].apply(lambda s: "VIP" in s)]
                 trace["after_vip"] = int(len(subset))
-
-            # Chief specialist for data change
             if ai_type == "Смена данных":
-                subset = subset[
-                    subset["pos_norm"].str.contains("глав") &
-                    subset["pos_norm"].str.contains("спец")
-                ]
                 trace["after_chief"] = int(len(subset))
-
-            # Language filter
             if ai_lang in ["KZ", "ENG"]:
-                subset = subset[subset["skills_set"].apply(lambda s: ai_lang in s)]
                 trace["after_lang"] = int(len(subset))
 
-            # Escalation
-            if subset.empty:
-                results.append({
-                    "guid": ticket["guid"],
-                    "ai_type": ai_type,
-                    "ai_lang": ai_lang,
-                    "priority": priority,
-                    "sentiment": ticket.get("sentiment", ""),
-                    "summary": ticket.get("summary", ""),
-                    "recommendation": ticket.get("recommendation", ""),
-                    "office": office,
-                    "office_reason": office_reason,
-                    "distance_km": distance_km,
-                    "manager": "CAPITAL_ESCALATION",
-                    "trace": json.dumps({**trace, "escalation": True}, ensure_ascii=False),
+            # ── Менеджер найден в своём офисе ──────────────────────
+            if not subset.empty:
+                rr_key = (office, segment, ai_type, ai_lang)
+                selected = self._select_manager(subset, rr_key)
+                manager_name = selected["name"]
+                self.managers.at[selected.name, "load"] += 1
+
+                trace.update({
+                    "escalation": False,
+                    "rr_index": self.rr_counters.get(rr_key, 1) - 1,
+                    "top2": subset.sort_values(["load", "name"]).head(2)["name"].tolist(),
+                    "selected": manager_name,
                 })
+
+                results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
+                                               office, office_reason, distance_km,
+                                               manager_name, trace))
                 continue
 
-            subset = subset.sort_values(["load", "name"], kind="mergesort")
-            top_2 = subset.head(2)
+            # ── Своего офиса нет → ищем ближайший ──────────────────
+            trace["escalation_reason"] = "no_suitable_manager_in_home_office"
 
-            rr_key = (office, segment, ai_type, ai_lang)
-            rr_idx = self.rr_counters.get(rr_key, 0)
+            near_manager, near_office, near_dist = self._find_nearest_manager(
+                ticket, office, segment, ai_type, ai_lang
+            )
 
-            selected = top_2.iloc[rr_idx % len(top_2)]
-            self.rr_counters[rr_key] = rr_idx + 1
+            if near_manager is not None:
+                manager_name = near_manager["name"]
+                self.managers.at[near_manager.name, "load"] += 1
 
-            manager_name = selected["name"]
-            self.managers.at[selected.name, "load"] += 1
+                trace.update({
+                    "escalation": False,
+                    "redirected_to_office": near_office,
+                    "redirected_distance_km": near_dist,
+                    "selected": manager_name,
+                })
 
-            trace.update({
-                "escalation": False,
-                "rr_index": rr_idx,
-                "top2": top_2["name"].tolist(),
-                "selected": manager_name,
-            })
-
-            results.append({
-                "guid": ticket["guid"],
-                "ai_type": ai_type,
-                "ai_lang": ai_lang,
-                "priority": priority,
-                "sentiment": ticket.get("sentiment", ""),
-                "summary": ticket.get("summary", ""),
-                "recommendation": ticket.get("recommendation", ""),
-                "office": office,
-                "office_reason": office_reason,
-                "distance_km": distance_km,
-                "manager": manager_name,
-                "trace": json.dumps(trace, ensure_ascii=False),
-            })
+                results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
+                                               near_office, "nearest_office", near_dist,
+                                               manager_name, trace))
+            else:
+                # Абсолютная эскалация — нет никого нигде
+                trace["escalation"] = True
+                results.append(self._build_row(ticket, ai_type, ai_lang, priority, segment,
+                                               office, office_reason, distance_km,
+                                               "CAPITAL_ESCALATION", trace))
 
         return pd.DataFrame(results)
+
+    # ============================================================
+    # HELPERS
+    # ============================================================
+
+    @staticmethod
+    def _build_row(
+        ticket: pd.Series,
+        ai_type: str, ai_lang: str, priority: int, segment: str,
+        office: str, office_reason: str, distance_km: Optional[float],
+        manager: str, trace: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "guid":           ticket["guid"],
+            "ai_type":        ai_type,
+            "ai_lang":        ai_lang,
+            "priority":       priority,
+            "sentiment":      ticket.get("sentiment", ""),
+            "summary":        ticket.get("summary", ""),
+            "recommendation": ticket.get("recommendation", ""),
+            "office":         office,
+            "office_reason":  office_reason,
+            "distance_km":    distance_km,
+            "manager":        manager,
+            "trace":          json.dumps(trace, ensure_ascii=False),
+        }

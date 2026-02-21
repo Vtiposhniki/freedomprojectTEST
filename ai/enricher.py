@@ -3,10 +3,10 @@ enricher.py
 -----------
 AI enrichment layer orchestrator.
 
-TicketEnricher is the single entry-point for the AI layer.
-It composes all AI sub-modules and returns a structured enrichment dict
-that the routing core (FIREEngine) can consume — without containing any
-NLP/AI logic itself.
+Стратегия:
+  - ai_type, ai_lang, sentiment, priority, lat/lon → rule-based (мгновенно)
+  - summary + recommendation                       → LLM (если доступен)
+  - Если LLM недоступен → summary и recommendation тоже rule-based
 """
 
 from typing import Any, Optional, Tuple
@@ -15,75 +15,108 @@ from ai.sentiment import SentimentEngine
 from ai.nlp import TypeClassifier, LanguageDetector
 from ai.summarizer import SimpleSummarizer, RecommendationEngine
 from ai.geo import GeoNormalizer
-from ai.llm_analyzer import analyze_with_llm
+from ai.llm_client import get_client
 
 
 # ---------------------------------------------------------------------------
 # Priority configuration
 # ---------------------------------------------------------------------------
 
-# Types that immediately push priority to a high baseline
 _HIGH_PRIORITY_TYPES: frozenset[str] = frozenset({
     "Мошеннические действия",
     "Жалоба",
     "Претензия",
 })
 
-_BASE_PRIORITY: int = 5          # neutral baseline (1-10 scale)
-_HIGH_TYPE_BONUS: int = 3        # added for high-priority types
+_BASE_PRIORITY: int = 5
+_HIGH_TYPE_BONUS: int = 3
 _NEGATIVE_SENTIMENT_BONUS: int = 2
-_VIP_BONUS: int = 2              # added when ticket["segment"] == "VIP"
+_VIP_BONUS: int = 2
 _PRIORITY_MIN: int = 1
 _PRIORITY_MAX: int = 10
 
+LLM_MODEL = "qwen/qwen3-next-80b-a3b-instruct"
+
+SUMMARY_SYSTEM_PROMPT = """
+Ты — помощник оператора колл-центра.
+
+По тексту обращения клиента напиши СТРОГО JSON:
+
+{
+  "summary": "краткая суть обращения в 1-2 предложения",
+  "recommendation": "конкретная рекомендация менеджеру что делать"
+}
+
+Никакого текста вне JSON. Язык ответа — русский.
+"""
+
 
 def _clamp(value: int, lo: int, hi: int) -> int:
-    """Return *value* clamped to [lo, hi]."""
     return max(lo, min(hi, value))
-
 
 
 def _safe_str(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
-def _safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
-    return value if isinstance(value, int) else default
-
-
-def _extract_llm_city(llm: dict[str, Any]) -> str:
-    geo = llm.get("geo")
-    if isinstance(geo, dict):
-        return _safe_str(geo.get("city"), "")
-    return ""
-
-
-def analyze_ticket_with_fallback(text: str) -> Optional[dict[str, Any]]:
+def _get_llm_summary(text: str) -> Optional[dict]:
     """
-    LLM-first ticket analysis.
-    Returns dict if LLM produced a usable result, else None.
+    Запросить у LLM только summary и recommendation.
+    Возвращает dict с ключами summary/recommendation или None при ошибке.
     """
-    llm = analyze_with_llm(text)
-    if isinstance(llm, dict) and llm:
-        return llm
-    return None
+    import json
+    import re
+
+    client = get_client()
+    if client is None:
+        return None
+
+    try:
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": text[:3000]},
+            ],
+            temperature=0.3,
+            max_tokens=300,
+            timeout=15,
+        )
+
+        raw = response.choices[0].message.content or ""
+        print(f"[LLM] summary | chars: {len(raw)}")
+
+        match = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
+        json_str = match.group(1).strip() if match else raw.strip()
+        match2 = re.search(r"\{[\s\S]+\}", json_str)
+        if match2:
+            json_str = match2.group(0)
+
+        data = json.loads(json_str)
+        summary = _safe_str(data.get("summary"))
+        recommendation = _safe_str(data.get("recommendation"))
+
+        if summary and recommendation:
+            return {"summary": summary, "recommendation": recommendation}
+        return None
+
+    except Exception as e:
+        print(f"[LLM] summary error: {type(e).__name__}: {e}")
+        return None
 
 
 class TicketEnricher:
-    """Enrich a raw ticket dict with AI-derived fields.
+    """
+    Обогащает тикет AI-полями.
 
-    All AI modules are initialised once at construction time and reused
-    across calls, making enrichment stateless and thread-safe (assuming
-    the sub-modules themselves are stateless, which they are).
+    Rule-based (мгновенно):
+        ai_type, ai_lang, sentiment, priority, lat, lon
 
-    Usage::
-
-        enricher = TicketEnricher()
-        result = enricher.enrich(ticket)
+    LLM (только если доступен):
+        summary, recommendation
     """
 
     def __init__(self) -> None:
-        # Instantiate all AI sub-modules exactly once
         self._sentiment_engine = SentimentEngine()
         self._type_classifier = TypeClassifier()
         self._lang_detector = LanguageDetector()
@@ -91,95 +124,50 @@ class TicketEnricher:
         self._recommender = RecommendationEngine()
         self._geo = GeoNormalizer()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def enrich(self, ticket: dict[str, Any]) -> dict[str, Any]:
-        """Return an enrichment dict for the given *ticket*.
+        text: str = _safe_str(ticket.get("text", ""))
+        city: str = _safe_str(ticket.get("city", ""))
+        segment: str = _safe_str(ticket.get("segment", ""))
 
-        Expected ticket fields (all optional — missing ones degrade gracefully):
-            text     (str)  : main ticket body
-            city     (str)  : client city name
-            segment  (str)  : client segment, e.g. "VIP", "STANDARD"
+        # ── Rule-based: классификация ────────────────────────────────────
+        ai_type: str = self._type_classifier.classify(text)
+        ai_lang: str = self._lang_detector.detect(text)
+        sentiment: str = self._sentiment_engine.analyze(text)
+        priority: int = self._calculate_priority(ai_type, sentiment, segment)
 
-        Returns a dict with keys:
-            ai_type        (str)            : classified ticket category
-            ai_lang        (str)            : detected language code
-            sentiment      (str)            : 'POS' | 'NEU' | 'NEG'
-            priority       (int)            : 1–10
-            summary        (str)            : short extractive summary
-            recommendation (str)            : recommended agent action
-            lat            (float | None)   : client city latitude
-            lon            (float | None)   : client city longitude
-        """
-        text: str = _safe_str(ticket.get("text", ""), "")
-        city_from_ticket: str = _safe_str(ticket.get("city", ""), "")
-        segment: str = _safe_str(ticket.get("segment", ""), "")
+        # ── Rule-based: гео ──────────────────────────────────────────────
+        lat, lon = self._geo.geocode(city)
 
-        # --- LLM-first (optional) --------------------------------------
-        llm: Optional[dict[str, Any]] = analyze_ticket_with_fallback(text)
+        # ── LLM: только summary + recommendation ─────────────────────────
+        llm = _get_llm_summary(text)
 
-        if llm is not None:
-            # Pull fields from LLM, fallback to rule-based per-field
-            ai_type: str = _safe_str(llm.get("ai_type"), "") or self._type_classifier.classify(text)
-            ai_lang: str = _safe_str(llm.get("ai_lang"), "") or self._lang_detector.detect(text)
-            sentiment: str = _safe_str(llm.get("sentiment"), "") or self._sentiment_engine.analyze(text)
-
-            llm_priority: Optional[int] = _safe_int(llm.get("priority"))
-            if llm_priority is not None:
-                priority: int = _clamp(llm_priority, _PRIORITY_MIN, _PRIORITY_MAX)
-            else:
-                priority = self._calculate_priority(ai_type, sentiment, segment)
-
-            summary: str = _safe_str(llm.get("summary"), "") or self._summarizer.summarize(text)
-            recommendation: str = _safe_str(llm.get("recommendation"), "") or self._recommender.recommend(
-                ai_type, priority, sentiment
-            )
-
-            # City: prefer LLM geo.city if present, else ticket city
-            city_for_geo: str = _extract_llm_city(llm) or city_from_ticket
+        if llm:
+            summary = llm["summary"]
+            recommendation = llm["recommendation"]
         else:
-            # --- Core NLP (rule-based) -----------------------------------
-            ai_type = self._type_classifier.classify(text)
-            ai_lang = self._lang_detector.detect(text)
-            sentiment = self._sentiment_engine.analyze(text)
-
-            # --- Priority calculation ------------------------------------
-            priority = self._calculate_priority(ai_type, sentiment, segment)
-
-            # --- Summarisation & recommendation --------------------------
+            # Fallback если LLM недоступен
             summary = self._summarizer.summarize(text)
             recommendation = self._recommender.recommend(ai_type, priority, sentiment)
 
-            city_for_geo = city_from_ticket
-
-        # --- Geo ---------------------------------------------------------
-        lat, lon = self._geo.geocode(city_for_geo)
-
         return {
-            "ai_type": ai_type,
-            "ai_lang": ai_lang,
-            "sentiment": sentiment,
-            "priority": priority,
-            "summary": summary,
+            "ai_type":        ai_type,
+            "ai_lang":        ai_lang,
+            "sentiment":      sentiment,
+            "priority":       priority,
+            "summary":        summary,
             "recommendation": recommendation,
-            "lat": lat,
-            "lon": lon,
+            "lat":            lat,
+            "lon":            lon,
         }
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _calculate_priority(ai_type: str, sentiment: str, segment: str) -> int:
-        """Compute a 1–10 priority score from type, sentiment, and segment.
-
-        Rules (additive):
-            * Fraud / Complaint / Claim types   → +3 on top of base (5)
-            * Negative sentiment                → +2
-            * VIP segment                       → +2
+        """
+        Правила (аддитивные):
+            base                                → 5
+            Мошенничество / Жалоба / Претензия  → +3
+            Негативная тональность              → +2
+            VIP или Priority сегмент            → +2
         """
         score: int = _BASE_PRIORITY
 
@@ -189,7 +177,7 @@ class TicketEnricher:
         if sentiment == "NEG":
             score += _NEGATIVE_SENTIMENT_BONUS
 
-        if segment.strip().upper() == "VIP":
+        if segment.strip().upper() in ("VIP", "PRIORITY"):
             score += _VIP_BONUS
 
         return _clamp(score, _PRIORITY_MIN, _PRIORITY_MAX)
