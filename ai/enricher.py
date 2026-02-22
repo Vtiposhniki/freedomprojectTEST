@@ -35,21 +35,23 @@ _PRIORITY_MAX: int = 10
 LLM_MODEL = "qwen/qwen3-next-80b-a3b-instruct"
 
 SUMMARY_SYSTEM_PROMPT = """
-Ты — помощник оператора колл-центра.
+Ты — опытный аналитик колл-центра Freedom Finance.
 
 По тексту обращения клиента напиши СТРОГО JSON без лишнего текста:
 
 {
-  "summary": "краткая суть обращения в 1-2 предложения",
-  "recommendation": "конкретная рекомендация менеджеру что делать"
+  "summary": "краткая суть обращения: что именно случилось у клиента, в 1-2 предложениях",
+  "recommendation": "конкретные шаги для менеджера: что проверить, с кем связаться, что сообщить клиенту"
 }
 
 ВАЖНО:
 - Только JSON, никакого текста до или после
 - Никаких markdown-блоков (``` и т.п.)
-- summary не длиннее 150 символов
-- recommendation не длиннее 150 символов
+- summary не длиннее 250 символов — опиши суть максимально конкретно
+- recommendation не длиннее 300 символов — дай 2-3 конкретных действия менеджеру
 - Язык ответа — русский
+- Используй профессиональный деловой стиль
+- В recommendation упоминай конкретные системы, реестры, отделы если уместно
 """
 
 
@@ -74,10 +76,10 @@ def _get_llm_summary(text: str) -> Optional[dict]:
             model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": text[:2000]},  # уменьшили вход чтобы дать место выходу
+                {"role": "user", "content": text[:2000]},
             ],
             temperature=0.2,
-            max_tokens=400,   # было 150 — не хватало, JSON обрезался
+            max_tokens=600,
             timeout=15,
         )
 
@@ -93,7 +95,7 @@ def _get_llm_summary(text: str) -> Optional[dict]:
         if match2:
             json_str = match2.group(0)
 
-        # Попытка починить обрезанный JSON — закрываем незакрытые кавычки и скобки
+        # Попытка починить обрезанный JSON
         json_str = _try_repair_json(json_str)
 
         data = json.loads(json_str)
@@ -118,23 +120,20 @@ def _try_repair_json(s: str) -> str:
     if not s:
         return s
 
-    # Считаем незакрытые кавычки (не экранированные)
     in_string = False
     i = 0
     while i < len(s):
         c = s[i]
         if c == '\\' and in_string:
-            i += 2  # пропускаем escape-последовательность
+            i += 2
             continue
         if c == '"':
             in_string = not in_string
         i += 1
 
-    # Если строка не закрыта — закрываем
     if in_string:
         s += '"'
 
-    # Закрываем скобки
     if not s.endswith('}'):
         s += '}'
 
