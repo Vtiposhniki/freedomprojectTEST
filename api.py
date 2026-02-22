@@ -17,6 +17,7 @@ import numpy as np
 import json
 import os
 import sys
+import re
 from functools import lru_cache
 import time
 
@@ -60,10 +61,6 @@ def query_df(sql: str, params=None) -> pd.DataFrame:
 
 
 def safe_serialize(df: pd.DataFrame) -> list:
-    """
-    Безопасная сериализация DataFrame в список словарей.
-    Обрабатывает NaT, NaN, numpy типы, Timestamp.
-    """
     records = []
     for _, row in df.iterrows():
         record = {}
@@ -71,7 +68,6 @@ def safe_serialize(df: pd.DataFrame) -> list:
             if pd.isna(val) if not isinstance(val, (list, dict)) else False:
                 record[col] = None
             elif hasattr(val, 'isoformat'):
-                # Timestamp, datetime
                 record[col] = val.isoformat()
             elif isinstance(val, (np.integer,)):
                 record[col] = int(val)
@@ -85,6 +81,17 @@ def safe_serialize(df: pd.DataFrame) -> list:
                 record[col] = val
         records.append(record)
     return records
+
+
+def strip_markdown(text: str) -> str:
+    """Убирает markdown-форматирование и thinking-блоки из текста."""
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text)  # убираем thinking блоки
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    text = re.sub(r'`(.*?)`', r'\1', text)
+    text = re.sub(r'#{1,6}\s+', '', text)
+    return text.strip()
 
 
 # ─────────────────────────────────────────────
@@ -221,7 +228,6 @@ def get_tickets(
     limit: int = Query(default=100, le=500),
     offset: int = 0,
 ):
-    """Список тикетов с фильтрацией."""
     conditions = []
     params = {}
 
@@ -303,7 +309,6 @@ def get_ticket(guid: str):
 
 @app.get("/geo/tickets")
 def get_geo_tickets():
-    """Тикеты — координаты тикета если есть, иначе координаты офиса."""
     df = query_df("""
         SELECT
             v.guid, v.city, v.office, v.ai_type, v.sentiment,
@@ -325,7 +330,6 @@ def get_geo_offices():
     if df.empty:
         return []
 
-    # Справочник адресов — fallback если в БД пусто
     _ADDRESSES = {
         "актау":            "17-й микрорайон, Бизнес-центр «Urban», зд. 22",
         "актобе":            "пр. Алии Молдагуловой, 44",
@@ -362,7 +366,6 @@ def get_geo_offices():
 
 @app.post("/geo/offices/patch_addresses")
 def patch_office_addresses_endpoint():
-    """Патч адресов офисов из встроенного справочника."""
     try:
         from db import patch_office_addresses
         updated = patch_office_addresses()
@@ -399,7 +402,6 @@ class ChatRequest(BaseModel):
 
 @app.post("/ai/chat")
 def ai_chat(req: ChatRequest):
-    """AI-ассистент для аналитики — отвечает на вопросы по данным."""
     summary = get_summary()
     by_type = get_by_type()
     by_office = get_by_office()
@@ -430,12 +432,15 @@ def ai_chat(req: ChatRequest):
 {json.dumps(manager_load[:10], ensure_ascii=False, indent=2)}
 
 Отвечай на русском языке. Будь конкретным, используй числа из данных.
+Не используй markdown-форматирование (никаких **жирных**, *курсивных*, # заголовков).
+Пиши простым текстом.
 Если вопрос про тренды или прогнозы — честно скажи что данных для этого недостаточно.
+На приветствия и общие вопросы отвечай коротко и дружелюбно, не отказывай.
 """
 
     client = get_client()
     if client is None:
-        return {"answer": _rule_based_answer(req.question, summary, by_type, by_office)}
+        return {"answer": _rule_based_answer(req.question, summary, by_type, by_office), "source": "fallback"}
 
     messages = [{"role": "system", "content": context}]
     for msg in req.history[-6:]:
@@ -444,15 +449,19 @@ def ai_chat(req: ChatRequest):
 
     try:
         response = client.chat.completions.create(
-            model="qwen/qwen3-next-80b-a3b-instruct",
+            model="upstage/solar-pro-3:free",
             messages=messages,
             temperature=0.3,
             max_tokens=600,
             timeout=20,
         )
         answer = response.choices[0].message.content or ""
+        print(f"[RAW ANSWER]: {repr(answer[:500])}", flush=True)
+        answer = strip_markdown(answer)
+        print(f"[CLEAN ANSWER]: {repr(answer[:200])}", flush=True)
         return {"answer": answer, "source": "llm"}
     except Exception as e:
+        print(f"[LLM ERROR]: {type(e).__name__}: {e}", flush=True)
         return {
             "answer": _rule_based_answer(req.question, summary, by_type, by_office),
             "source": "fallback",
@@ -463,21 +472,24 @@ def ai_chat(req: ChatRequest):
 def _rule_based_answer(question: str, summary: dict, by_type: list, by_office: list) -> str:
     q = question.lower()
 
+    if any(w in q for w in ["привет", "здравствуй", "добрый", "хай", "hello", "hi"]):
+        return "Привет! Я аналитик данных колл-центра. Спрашивайте про тикеты, офисы, менеджеров или эскалации."
+
     if any(w in q for w in ["сколько", "количество", "всего", "total"]):
         return (
-            f"Всего тикетов: **{summary.get('total_tickets')}**\n"
-            f"Эскалаций: **{summary.get('escalations')}** ({summary.get('escalation_rate_pct')}%)\n"
-            f"Средний приоритет: **{summary.get('avg_priority')}**"
+            f"Всего тикетов: {summary.get('total_tickets')}\n"
+            f"Эскалаций: {summary.get('escalations')} ({summary.get('escalation_rate_pct')}%)\n"
+            f"Средний приоритет: {summary.get('avg_priority')}"
         )
     if any(w in q for w in ["офис", "город"]):
         top = by_office[0] if by_office else {}
-        return f"Больше всего тикетов в офисе **{top.get('office')}**: {top.get('tickets')} шт."
+        return f"Больше всего тикетов в офисе {top.get('office')}: {top.get('tickets')} шт."
     if any(w in q for w in ["тип", "категори", "жалоб", "консультаци"]):
         top = by_type[0] if by_type else {}
-        return f"Самый частый тип: **{top.get('ai_type')}** — {top.get('count')} тикетов."
+        return f"Самый частый тип: {top.get('ai_type')} — {top.get('count')} тикетов."
     if any(w in q for w in ["эскалаци", "escalat"]):
         return (
-            f"Эскалаций: **{summary.get('escalations')}** из {summary.get('total_tickets')} "
+            f"Эскалаций: {summary.get('escalations')} из {summary.get('total_tickets')} "
             f"({summary.get('escalation_rate_pct')}%)"
         )
 

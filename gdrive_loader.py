@@ -1,6 +1,5 @@
-# gdrive_loader.py
 """
-Скачивает архив с CSV файлами из Google Drive, распаковывает и загружает в БД.
+Скачивает архив или папку с CSV файлами из Google Drive, распаковывает и загружает в БД.
 
 Установка:
     pip install gdown python-magic-bin  (Windows)
@@ -8,6 +7,7 @@
 
 Использование:
     python gdrive_loader.py --url "https://drive.google.com/file/d/.../view"
+    python gdrive_loader.py --url "https://drive.google.com/drive/folders/..."
 
     или задай URL прямо в файле в переменной DEFAULT_URL ниже.
 """
@@ -61,76 +61,149 @@ def setup():
     )
     logging.info("Process started")
 
+
+# --------------------------------------------------
+# URL helpers
+# --------------------------------------------------
+def is_folder_url(url: str) -> bool:
+    """Определяет, является ли ссылка ссылкой на папку Google Drive."""
+    return "/drive/folders/" in url or "?usp=sharing" in url and "/folders/" in url
+
+
 # --------------------------------------------------
 # Download
 # --------------------------------------------------
 def download_file(url: str) -> str:
+    """Скачивает файл из Google Drive. Возвращает путь к скачанному файлу."""
     output = os.path.join(ARCHIVE_DIR, "archive")
-    logging.info(f"Downloading: {url}")
-    path = gdown.download(url, output, fuzzy=True)
+    logging.info(f"Downloading file: {url}")
+    path = gdown.download(url, output, fuzzy=True, quiet=False)
     if not path or not os.path.exists(path):
-        raise Exception("Файл не скачался. Проверь ссылку и доступ (Общий доступ -> Все у кого есть ссылка)")
+        raise Exception(
+            "Файл не скачался. Проверь ссылку и доступ "
+            "(Общий доступ -> Все у кого есть ссылка)"
+        )
     logging.info(f"Downloaded to: {path}")
     return path
+
+
+def download_folder(url: str) -> None:
+    """Скачивает папку из Google Drive напрямую в EXTRACT_DIR."""
+    logging.info(f"Downloading folder: {url}")
+    gdown.download_folder(url, output=EXTRACT_DIR, quiet=False, use_cookies=False)
+    logging.info(f"Folder downloaded to: {EXTRACT_DIR}")
+
 
 # --------------------------------------------------
 # Detect & Extract
 # --------------------------------------------------
 def detect_archive_type(path: str) -> str:
+    """Определяет тип архива по сигнатуре файла."""
+
+    # 1. Пробуем python-magic если доступен
     if MAGIC_AVAILABLE:
         try:
             mime = magic.from_file(path, mime=True)
+            logging.info(f"MIME type: {mime}")
             if mime == "application/zip":
                 return "zip"
-            if mime == "application/x-tar":
+            if mime in ("application/x-tar",):
                 return "tar"
-            if mime in ["application/gzip", "application/x-gzip"]:
+            if mime in ("application/gzip", "application/x-gzip"):
                 return "tar.gz"
+            if mime == "application/x-bzip2":
+                return "tar.bz2"
+            if mime == "application/x-xz":
+                return "tar.xz"
         except Exception as e:
             logging.warning(f"MIME detection failed: {e}")
 
+    # 2. Проверяем магические байты
     with open(path, "rb") as f:
         sig = f.read(8)
-    if sig.startswith(b"PK"):
+
+    if sig[:2] == b"PK":
         return "zip"
-    if sig.startswith(b"\x1f\x8b"):
+    if sig[:2] == b"\x1f\x8b":
         return "tar.gz"
-    return "unknown"
+    if sig[:3] == b"BZh":
+        return "tar.bz2"
+    if sig[:6] == b"\xfd7zXZ\x00":
+        return "tar.xz"
+
+    # 3. Пробуем tarfile как fallback (он сам умеет определять формат)
+    if tarfile.is_tarfile(path):
+        return "tar"
+
+    # 4. Последняя попытка — zipfile
+    if zipfile.is_zipfile(path):
+        return "zip"
+
+    # Диагностика: покажем первые байты чтобы понять что пришло
+    with open(path, "rb") as f:
+        header = f.read(64)
+    logging.error(f"Unknown format. First bytes: {header!r}")
+    print(f"  ⚠ Первые байты файла: {header!r}")
+
+    # Если это HTML — скорее всего пришла страница подтверждения Drive
+    if b"<!DOCTYPE" in header or b"<html" in header.lower():
+        raise Exception(
+            "Google Drive вернул HTML страницу вместо файла.\n"
+            "Возможные причины:\n"
+            "  1. Файл не открыт для общего доступа\n"
+            "  2. Файл слишком большой — Drive требует подтверждения\n"
+            "  3. Неверная ссылка\n"
+            "Попробуй: gdown --fuzzy '<url>' или проверь настройки доступа."
+        )
+
+    raise Exception(f"Неподдерживаемый формат архива. Первые байты: {header!r}")
 
 
 def safe_extract_zip(path: str):
+    """Безопасная распаковка ZIP с защитой от Zip Slip."""
+    real_extract = os.path.realpath(EXTRACT_DIR)
     with zipfile.ZipFile(path) as z:
         for member in z.infolist():
-            extracted_path = os.path.join(EXTRACT_DIR, member.filename)
-            if not os.path.realpath(extracted_path).startswith(os.path.realpath(EXTRACT_DIR)):
-                raise Exception("Zip Slip detected")
+            extracted_path = os.path.realpath(os.path.join(EXTRACT_DIR, member.filename))
+            if not extracted_path.startswith(real_extract + os.sep) and extracted_path != real_extract:
+                raise Exception(f"Zip Slip detected: {member.filename}")
         z.extractall(EXTRACT_DIR)
 
 
-def safe_extract_tar(path: str, mode: str):
+def safe_extract_tar(path: str, mode: str = "r:*"):
+    """Безопасная распаковка TAR с защитой от Path Traversal.
+    mode='r:*' позволяет tarfile самому определить сжатие (gz, bz2, xz, plain).
+    """
+    real_extract = os.path.realpath(EXTRACT_DIR)
     with tarfile.open(path, mode) as tar:
         for member in tar.getmembers():
-            member_path = os.path.join(EXTRACT_DIR, member.name)
-            if not os.path.realpath(member_path).startswith(os.path.realpath(EXTRACT_DIR)):
-                raise Exception("Tar Path Traversal detected")
+            member_path = os.path.realpath(os.path.join(EXTRACT_DIR, member.name))
+            if not member_path.startswith(real_extract + os.sep) and member_path != real_extract:
+                raise Exception(f"Tar Path Traversal detected: {member.name}")
         tar.extractall(EXTRACT_DIR)
 
 
 def extract_archive(path: str):
+    """Определяет тип архива и распаковывает его."""
+    size = os.path.getsize(path)
+    logging.info(f"Archive size: {size} bytes")
+    print(f"  Размер файла: {size:,} байт")
+
     t = detect_archive_type(path)
     logging.info(f"Archive type: {t}")
     print(f"  Тип архива: {t}")
 
     if t == "zip":
         safe_extract_zip(path)
-    elif t == "tar":
-        safe_extract_tar(path, "r:")
-    elif t == "tar.gz":
-        safe_extract_tar(path, "r:gz")
+    elif t in ("tar", "tar.gz", "tar.bz2", "tar.xz"):
+        # mode="r:*" — tarfile сам разберётся со сжатием
+        safe_extract_tar(path, mode="r:*")
     else:
         raise Exception(f"Неподдерживаемый формат: {t}")
 
     logging.info("Extraction finished")
+    print("  Распаковка завершена.")
+
 
 # --------------------------------------------------
 # Cleanup
@@ -147,11 +220,12 @@ def cleanup_files():
     logging.info(f"Cleanup: removed {removed} files")
     print(f"  Удалено лишних файлов: {removed}")
 
+
 # --------------------------------------------------
 # Find CSVs
 # --------------------------------------------------
 def find_csv(key: str) -> str:
-    candidates = CSV_NAMES[key]
+    candidates = [c.lower() for c in CSV_NAMES[key]]
     for root, dirs, files in os.walk(EXTRACT_DIR):
         for f in files:
             if f.lower() in candidates:
@@ -159,16 +233,17 @@ def find_csv(key: str) -> str:
                 logging.info(f"Found {key}: {found}")
                 return found
 
-    # показываем что реально есть в архиве
+    # Показываем что реально есть в архиве
     found_files = []
     for root, dirs, files in os.walk(EXTRACT_DIR):
         for f in files:
             found_files.append(os.path.relpath(os.path.join(root, f), EXTRACT_DIR))
 
     raise FileNotFoundError(
-        f"Не найден файл для '{key}'. Ожидались: {candidates}\n"
+        f"Не найден файл для '{key}'. Ожидались: {CSV_NAMES[key]}\n"
         f"Файлы в архиве: {found_files}"
     )
+
 
 # --------------------------------------------------
 # DB helpers
@@ -196,12 +271,16 @@ def clear_all():
     finally:
         conn.close()
 
+
 # --------------------------------------------------
 # Main
 # --------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=DEFAULT_URL, help="Ссылка на архив в Google Drive")
+    parser.add_argument(
+        "--url", default=DEFAULT_URL,
+        help="Ссылка на архив или папку в Google Drive"
+    )
     args = parser.parse_args()
 
     url = args.url or DEFAULT_URL
@@ -211,19 +290,29 @@ def main():
 
     setup()
 
-    print("\n1. Скачиваем архив...")
-    archive = download_file(url)
-    checksum = sha256(archive)
-    print(f"   SHA256: {checksum}")
-    logging.info(f"SHA256: {checksum}")
+    folder_mode = is_folder_url(url)
 
-    print("\n2. Распаковываем...")
-    extract_archive(archive)
+    if folder_mode:
+        # ---- Режим папки: скачиваем файлы напрямую в EXTRACT_DIR ----
+        print("\n1. Скачиваем папку из Google Drive...")
+        download_folder(url)
+        print("\n2. Очищаем лишние файлы...")
+        cleanup_files()
+    else:
+        # ---- Режим файла: скачиваем архив и распаковываем ----
+        print("\n1. Скачиваем архив...")
+        archive = download_file(url)
+        checksum = sha256(archive)
+        print(f"   SHA256: {checksum}")
+        logging.info(f"SHA256: {checksum}")
 
-    print("\n3. Очищаем лишние файлы...")
-    cleanup_files()
+        print("\n2. Распаковываем...")
+        extract_archive(archive)
 
-    print("\n4. Ищем CSV файлы...")
+        print("\n3. Очищаем лишние файлы...")
+        cleanup_files()
+
+    print("\n4. Ищем CSV файлы...")  # номер шага одинаковый в обоих режимах
     tickets_path  = find_csv("tickets")
     managers_path = find_csv("managers")
     units_path    = find_csv("units")
@@ -241,7 +330,7 @@ def main():
     )
 
     logging.info("Process completed")
-    print("\nГотово! Теперь запусти:")
+    print("\n✓ Готово! Теперь запусти:")
     print("  python run.py")
     print("  python analyze.py")
 

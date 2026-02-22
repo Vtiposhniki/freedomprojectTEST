@@ -4,6 +4,7 @@ FIRE Engine — Streamlit Dashboard
 Запуск: streamlit run dashboard.py
 """
 import os
+import re
 import streamlit as st
 import requests
 import pandas as pd
@@ -364,8 +365,49 @@ hr {{ border-color: rgba(255,75,43,0.15) !important; }}
     margin-top: 1rem;
     animation: pageFadeIn 0.2s ease-out both;
 }}
+
+/* ── TABS ── */
+.stTabs [data-baseweb="tab-list"] {{
+    background: rgba(255,255,255,0.02) !important;
+    border-radius: 10px !important;
+    padding: 4px !important;
+    gap: 4px !important;
+    border: 1px solid rgba(255,75,43,0.15) !important;
+}}
+.stTabs [data-baseweb="tab"] {{
+    background: transparent !important;
+    color: #555 !important;
+    font-family: 'Syne', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    border-radius: 7px !important;
+    border: none !important;
+    padding: 8px 20px !important;
+}}
+.stTabs [aria-selected="true"] {{
+    background: rgba(255,75,43,0.15) !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255,75,43,0.35) !important;
+}}
+.stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
+.stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
+
+def strip_markdown(text: str) -> str:
+    """Убирает markdown-форматирование из текста."""
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    text = re.sub(r'`(.*?)`', r'\1', text)
+    text = re.sub(r'#{1,6}\s+', '', text)
+    return text.strip()
 
 
 # ─────────────────────────────────────────────
@@ -425,7 +467,6 @@ def plotly_dark(fig, height=350):
 # ─────────────────────────────────────────────
 
 def detect_chart_type(question: str):
-    """Определяет нужный график по ключевым словам вопроса."""
     q = question.lower()
     if any(w in q for w in ["тип", "категори", "вид обращени", "типам", "типов"]):
         return ("type", "Распределение по типам обращений")
@@ -972,206 +1013,326 @@ elif page == "Карта":
 # ─────────────────────────────────────────────
 
 elif page == "Загрузка":
-    st.markdown('<div class="fire-header">Загрузка CSV</div>', unsafe_allow_html=True)
-    st.markdown('<div class="page-sub">Импорт данных · тикеты · менеджеры · офисы</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fire-header">Загрузка данных</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-sub">Импорт данных · файлы CSV · Google Drive</div>', unsafe_allow_html=True)
 
-    st.markdown("""
-    <details style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,75,43,0.2);
-                    border-radius:10px;padding:0;margin-bottom:1rem;overflow:hidden;">
-        <summary style="padding:12px 18px;cursor:pointer;font-family:'Space Mono',monospace;
-                        font-size:0.78rem;font-weight:700;color:#888;letter-spacing:1.5px;
-                        text-transform:uppercase;list-style:none;display:flex;
-                        align-items:center;gap:8px;user-select:none;">
-            <span style="color:#FF4B2B;font-size:1rem;">▸</span>
-            ТРЕБОВАНИЯ К ФАЙЛАМ
-        </summary>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:0 18px 16px 18px;">
-            <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
-                            font-weight:700;letter-spacing:1px;margin-bottom:10px;">tickets.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
-                    GUID клиента<br>Пол клиента<br>Дата рождения<br>Описание<br>
-                    Вложения<br>Сегмент клиента<br>Страна<br>Область<br>
-                    Населённый пункт<br>Улица<br>Дом
-                </div>
-            </div>
-            <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
-                            font-weight:700;letter-spacing:1px;margin-bottom:10px;">managers.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
-                    ФИО<br>Должность<br>Офис<br>Навыки<br>Количество обращений в работе
-                </div>
-            </div>
-            <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
-                            font-weight:700;letter-spacing:1px;margin-bottom:10px;">business_units.csv</div>
-                <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
-                    Офис<br>Адрес
-                </div>
-            </div>
-        </div>
-    </details>
-    """, unsafe_allow_html=True)
+    # ── Две вкладки: файлы и Google Drive ──
+    tab_upload, tab_gdrive = st.tabs(["📁 Загрузка файлов", "🌐 Google Drive"])
 
-    st.markdown("---")
+    # ══════════════════════════════════════════
+    # ВКЛАДКА: GOOGLE DRIVE
+    # ══════════════════════════════════════════
+    with tab_gdrive:
+        st.markdown("<br>", unsafe_allow_html=True)
+        section_title("Загрузка архива из Google Drive")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="section-title">Тикеты</div>', unsafe_allow_html=True)
-        tickets_file = st.file_uploader("tickets.csv", type=["csv"], key="upload_tickets", label_visibility="collapsed")
-        if tickets_file:
-            try:
-                df_preview = pd.read_csv(tickets_file, nrows=5, encoding="utf-8-sig")
-                st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {tickets_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
-                tickets_file.seek(0)
-            except Exception as e:
-                st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
-                tickets_file = None
-
-    with col2:
-        st.markdown('<div class="section-title">Менеджеры</div>', unsafe_allow_html=True)
-        managers_file = st.file_uploader("managers.csv", type=["csv"], key="upload_managers", label_visibility="collapsed")
-        if managers_file:
-            try:
-                df_preview = pd.read_csv(managers_file, nrows=5, encoding="utf-8-sig")
-                st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {managers_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
-                managers_file.seek(0)
-            except Exception as e:
-                st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
-                managers_file = None
-
-    with col3:
-        st.markdown('<div class="section-title">Офисы</div>', unsafe_allow_html=True)
-        units_file = st.file_uploader("business_units.csv", type=["csv"], key="upload_units", label_visibility="collapsed")
-        if units_file:
-            try:
-                df_preview = pd.read_csv(units_file, nrows=5, encoding="utf-8-sig")
-                st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {units_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
-                units_file.seek(0)
-            except Exception as e:
-                st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
-                units_file = None
-
-    st.markdown("---")
-
-    if any([tickets_file, managers_file, units_file]):
-        section_title("Предпросмотр данных")
-        tab_names, tab_files = [], []
-        if tickets_file:  tab_names.append("Тикеты");    tab_files.append(tickets_file)
-        if managers_file: tab_names.append("Менеджеры"); tab_files.append(managers_file)
-        if units_file:    tab_names.append("Офисы");     tab_files.append(units_file)
-
-        tabs = st.tabs(tab_names)
-        for tab, f in zip(tabs, tab_files):
-            with tab:
-                try:
-                    df_prev = pd.read_csv(f, nrows=10, encoding="utf-8-sig")
-                    st.dataframe(df_prev, use_container_width=True, hide_index=True)
-                    f.seek(0)
-                    total_rows = sum(1 for _ in f) - 1
-                    f.seek(0)
-                    st.markdown(f'<div style="font-family:\'Space Mono\',monospace;font-size:0.72rem;color:#555;margin-top:0.4rem;">Показано 10 из ~{total_rows} строк · {len(df_prev.columns)} колонок</div>', unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Ошибка предпросмотра: {e}")
-
-    st.markdown("---")
-
-    all_ready = tickets_file and managers_file and units_file
-    col_btn, col_info = st.columns([1, 2])
-    with col_btn:
-        if not all_ready:
-            missing = []
-            if not tickets_file:  missing.append("tickets.csv")
-            if not managers_file: missing.append("managers.csv")
-            if not units_file:    missing.append("business_units.csv")
-            st.markdown(f'<div class="upload-step step-wait">Ожидание: {", ".join(missing)}</div>', unsafe_allow_html=True)
-        run_btn = st.button("Запустить импорт и маршрутизацию", disabled=not all_ready, use_container_width=True, key="run_import")
-
-    with col_info:
         st.markdown("""
-        <div style="background:rgba(255,255,255,0.03);border-radius:8px;padding:12px 16px;
-                    font-family:'Space Mono',monospace;font-size:0.72rem;color:#555;line-height:1.8;">
-            <div style="color:#888;margin-bottom:4px;">Что произойдёт:</div>
-            1. Файлы сохранятся во временную директорию<br>
-            2. БД очистится и заполнится новыми данными<br>
-            3. Запустится AI-обогащение тикетов<br>
-            4. FIRE Engine распределит тикеты по менеджерам<br>
-            5. Дашборд обновится автоматически
+        <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,75,43,0.2);
+                    border-radius:10px;padding:14px 18px;margin-bottom:1.2rem;">
+            <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
+                Архив должен содержать три файла:<br>
+                <span style="color:#FF4B2B;">tickets.csv</span> &nbsp;·&nbsp;
+                <span style="color:#FF4B2B;">managers.csv</span> &nbsp;·&nbsp;
+                <span style="color:#FF4B2B;">business_units.csv</span><br>
+                Поддерживаются форматы: <span style="color:#888;">.zip</span> и <span style="color:#888;">.tar.gz</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
-    if run_btn and all_ready:
-        import tempfile, os, subprocess, sys
-        st.markdown("---")
-        section_title("Выполнение")
-        log_container = st.container()
+        gdrive_url = st.text_input(
+            "Ссылка на архив Google Drive",
+            placeholder="https://drive.google.com/file/d/.../view",
+            key="gdrive_url_input"
+        )
 
-        def step(msg, status="run"):
-            log_container.markdown(f'<div class="upload-step step-{status}">{msg}</div>', unsafe_allow_html=True)
+        col_btn_g, col_info_g = st.columns([1, 2])
+        with col_btn_g:
+            gdrive_btn = st.button(
+                "⬇️  Скачать и импортировать",
+                key="gdrive_btn",
+                use_container_width=True,
+                disabled=not gdrive_url.strip()
+            )
+        with col_info_g:
+            st.markdown("""
+            <div style="background:rgba(255,255,255,0.03);border-radius:8px;padding:12px 16px;
+                        font-family:'Space Mono',monospace;font-size:0.72rem;color:#555;line-height:1.8;">
+                <div style="color:#888;margin-bottom:4px;">Что произойдёт:</div>
+                1. Архив скачается с Google Drive<br>
+                2. Файлы распакуются и загрузятся в БД<br>
+                3. Запустится AI-обогащение и маршрутизация<br>
+                4. Дашборд обновится автоматически
+            </div>
+            """, unsafe_allow_html=True)
 
-        with st.spinner("Идёт импорт..."):
-            try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    t_path = os.path.join(tmpdir, "tickets.csv")
-                    m_path = os.path.join(tmpdir, "managers.csv")
-                    u_path = os.path.join(tmpdir, "business_units.csv")
+        if gdrive_btn and gdrive_url.strip():
+            import subprocess, sys as _sys
+            st.markdown("---")
+            section_title("Выполнение")
+            log_box = st.container()
 
-                    tickets_file.seek(0); managers_file.seek(0); units_file.seek(0)
-                    with open(t_path, "wb") as f: f.write(tickets_file.read())
-                    with open(m_path, "wb") as f: f.write(managers_file.read())
-                    with open(u_path, "wb") as f: f.write(units_file.read())
+            def gstep(msg, status="run"):
+                log_box.markdown(
+                    f'<div class="upload-step step-{status}">{msg}</div>',
+                    unsafe_allow_html=True
+                )
 
-                    step("&#10003; Файлы сохранены во временную директорию", "ok")
-                    step("&#9654; Инициализация БД и загрузка данных...", "run")
+            gstep("▶ Запускаем gdrive_loader.py...", "run")
+            gstep("⏳ Это может занять 2-5 минут в зависимости от размера архива", "wait")
 
-                    try:
-                        project_root = os.path.dirname(os.path.abspath(__file__))
-                        if project_root not in sys.path:
-                            sys.path.insert(0, project_root)
+            with st.spinner("Скачиваем и загружаем данные..."):
+                try:
+                    project_root = os.path.dirname(os.path.abspath(__file__))
+                    result = subprocess.run(
+                        [_sys.executable, os.path.join(project_root, "gdrive_loader.py"),
+                         "--url", gdrive_url.strip()],
+                        capture_output=True, text=True, timeout=600, cwd=project_root,
+                    )
 
-                        from db import init_db, load_csv, get_connection
-                        conn = get_connection()
-                        with conn.cursor() as cur:
-                            cur.execute("TRUNCATE TABLE assignments  RESTART IDENTITY CASCADE;")
-                            cur.execute("TRUNCATE TABLE ai_analysis  RESTART IDENTITY CASCADE;")
-                            cur.execute("TRUNCATE TABLE tickets      RESTART IDENTITY CASCADE;")
-                            cur.execute("TRUNCATE TABLE managers     RESTART IDENTITY CASCADE;")
-                            cur.execute("TRUNCATE TABLE offices      RESTART IDENTITY CASCADE;")
-                        conn.commit(); conn.close()
-                        init_db()
-                        load_csv(tickets_path=t_path, managers_path=m_path, units_path=u_path)
-                        step("&#10003; БД заполнена", "ok")
-                    except Exception as e:
-                        step(f"&#10007; Ошибка БД: {e}", "err")
-                        st.stop()
+                    if result.returncode == 0:
+                        gstep("✓ Данные загружены из Google Drive", "ok")
+                        for line in [l for l in result.stdout.strip().split("\n") if l.strip()][-10:]:
+                            log_box.markdown(
+                                f'<div style="font-family:\'Space Mono\',monospace;font-size:0.7rem;'
+                                f'color:#555;padding:2px 12px;">{line}</div>',
+                                unsafe_allow_html=True
+                            )
+                        gstep("▶ Запускаем AI-обогащение и маршрутизацию...", "run")
 
-                    step("&#9654; Запуск AI-обогащения и маршрутизации...", "run")
-                    step("&#9432; Это может занять 1-3 минуты", "wait")
-
-                    try:
-                        result = subprocess.run(
-                            [sys.executable, os.path.join(project_root, "run.py")],
-                            capture_output=True, text=True, timeout=300, cwd=project_root,
+                        result2 = subprocess.run(
+                            [_sys.executable, os.path.join(project_root, "run.py")],
+                            capture_output=True, text=True, timeout=600, cwd=project_root,
                         )
-                        if result.returncode == 0:
-                            step("&#10003; Маршрутизация завершена успешно", "ok")
-                            for line in [l for l in result.stdout.strip().split("\n") if l.strip()][-6:]:
-                                log_container.markdown(f'<div style="font-family:\'Space Mono\',monospace;font-size:0.7rem;color:#555;padding:2px 12px;">{line}</div>', unsafe_allow_html=True)
+                        if result2.returncode == 0:
+                            gstep("✓ Маршрутизация завершена успешно", "ok")
+                            for line in [l for l in result2.stdout.strip().split("\n") if l.strip()][-6:]:
+                                log_box.markdown(
+                                    f'<div style="font-family:\'Space Mono\',monospace;font-size:0.7rem;'
+                                    f'color:#555;padding:2px 12px;">{line}</div>',
+                                    unsafe_allow_html=True
+                                )
                         else:
-                            step("&#10007; run.py завершился с ошибкой", "err")
-                            if result.stderr:
-                                log_container.code(result.stderr[-1000:], language="text")
-                    except subprocess.TimeoutExpired:
-                        step("&#10007; Таймаут 5 минут превышен", "err")
+                            gstep("✗ Ошибка маршрутизации (run.py)", "err")
+                            if result2.stderr:
+                                log_box.code(result2.stderr[-1000:], language="text")
+
+                        st.success("Готово! Перейдите на страницу Обзор.")
+                        st.cache_data.clear()
+                    else:
+                        gstep("✗ Ошибка загрузки архива", "err")
+                        if result.stderr:
+                            log_box.code(result.stderr[-1500:], language="text")
+                        else:
+                            log_box.code(result.stdout[-1000:] or "нет вывода", language="text")
+
+                except subprocess.TimeoutExpired:
+                    gstep("✗ Таймаут 10 минут превышен", "err")
+                except Exception as e:
+                    gstep(f"✗ Неожиданная ошибка: {e}", "err")
+
+    # ══════════════════════════════════════════
+    # ВКЛАДКА: ЗАГРУЗКА ФАЙЛОВ (оригинальная)
+    # ══════════════════════════════════════════
+    with tab_upload:
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <details style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,75,43,0.2);
+                        border-radius:10px;padding:0;margin-bottom:1rem;overflow:hidden;">
+            <summary style="padding:12px 18px;cursor:pointer;font-family:'Space Mono',monospace;
+                            font-size:0.78rem;font-weight:700;color:#888;letter-spacing:1.5px;
+                            text-transform:uppercase;list-style:none;display:flex;
+                            align-items:center;gap:8px;user-select:none;">
+                <span style="color:#FF4B2B;font-size:1rem;">▸</span>
+                ТРЕБОВАНИЯ К ФАЙЛАМ
+            </summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:0 18px 16px 18px;">
+                <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
+                                font-weight:700;letter-spacing:1px;margin-bottom:10px;">tickets.csv</div>
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
+                        GUID клиента<br>Пол клиента<br>Дата рождения<br>Описание<br>
+                        Вложения<br>Сегмент клиента<br>Страна<br>Область<br>
+                        Населённый пункт<br>Улица<br>Дом
+                    </div>
+                </div>
+                <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
+                                font-weight:700;letter-spacing:1px;margin-bottom:10px;">managers.csv</div>
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
+                        ФИО<br>Должность<br>Офис<br>Навыки<br>Количество обращений в работе
+                    </div>
+                </div>
+                <div style="background:#0d0d1a;border:1px solid rgba(255,75,43,0.15);border-radius:8px;padding:14px;">
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#FF4B2B;
+                                font-weight:700;letter-spacing:1px;margin-bottom:10px;">business_units.csv</div>
+                    <div style="font-family:'Space Mono',monospace;font-size:0.72rem;color:#666;line-height:2;">
+                        Офис<br>Адрес
+                    </div>
+                </div>
+            </div>
+        </details>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('<div class="section-title">Тикеты</div>', unsafe_allow_html=True)
+            tickets_file = st.file_uploader("tickets.csv", type=["csv"], key="upload_tickets", label_visibility="collapsed")
+            if tickets_file:
+                try:
+                    df_preview = pd.read_csv(tickets_file, nrows=5, encoding="utf-8-sig")
+                    st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {tickets_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
+                    tickets_file.seek(0)
+                except Exception as e:
+                    st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
+                    tickets_file = None
+
+        with col2:
+            st.markdown('<div class="section-title">Менеджеры</div>', unsafe_allow_html=True)
+            managers_file = st.file_uploader("managers.csv", type=["csv"], key="upload_managers", label_visibility="collapsed")
+            if managers_file:
+                try:
+                    df_preview = pd.read_csv(managers_file, nrows=5, encoding="utf-8-sig")
+                    st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {managers_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
+                    managers_file.seek(0)
+                except Exception as e:
+                    st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
+                    managers_file = None
+
+        with col3:
+            st.markdown('<div class="section-title">Офисы</div>', unsafe_allow_html=True)
+            units_file = st.file_uploader("business_units.csv", type=["csv"], key="upload_units", label_visibility="collapsed")
+            if units_file:
+                try:
+                    df_preview = pd.read_csv(units_file, nrows=5, encoding="utf-8-sig")
+                    st.markdown(f'<div class="upload-step step-ok">&#10003; Загружен · {units_file.size // 1024} KB · {len(df_preview.columns)} колонок</div>', unsafe_allow_html=True)
+                    units_file.seek(0)
+                except Exception as e:
+                    st.markdown(f'<div class="upload-step step-err">&#10007; Ошибка чтения: {e}</div>', unsafe_allow_html=True)
+                    units_file = None
+
+        st.markdown("---")
+
+        if any([tickets_file, managers_file, units_file]):
+            section_title("Предпросмотр данных")
+            tab_names, tab_files = [], []
+            if tickets_file:  tab_names.append("Тикеты");    tab_files.append(tickets_file)
+            if managers_file: tab_names.append("Менеджеры"); tab_files.append(managers_file)
+            if units_file:    tab_names.append("Офисы");     tab_files.append(units_file)
+
+            tabs = st.tabs(tab_names)
+            for tab, f in zip(tabs, tab_files):
+                with tab:
+                    try:
+                        df_prev = pd.read_csv(f, nrows=10, encoding="utf-8-sig")
+                        st.dataframe(df_prev, use_container_width=True, hide_index=True)
+                        f.seek(0)
+                        total_rows = sum(1 for _ in f) - 1
+                        f.seek(0)
+                        st.markdown(f'<div style="font-family:\'Space Mono\',monospace;font-size:0.72rem;color:#555;margin-top:0.4rem;">Показано 10 из ~{total_rows} строк · {len(df_prev.columns)} колонок</div>', unsafe_allow_html=True)
                     except Exception as e:
-                        step(f"&#10007; Ошибка запуска: {e}", "err")
+                        st.error(f"Ошибка предпросмотра: {e}")
 
-                step("&#10003; Импорт завершён", "ok")
-                st.success("Данные загружены. Перейдите на страницу Обзор.")
-                st.cache_data.clear()
+        st.markdown("---")
 
-            except Exception as e:
-                step(f"&#10007; Неожиданная ошибка: {e}", "err")
+        all_ready = tickets_file and managers_file and units_file
+        col_btn, col_info = st.columns([1, 2])
+        with col_btn:
+            if not all_ready:
+                missing = []
+                if not tickets_file:  missing.append("tickets.csv")
+                if not managers_file: missing.append("managers.csv")
+                if not units_file:    missing.append("business_units.csv")
+                st.markdown(f'<div class="upload-step step-wait">Ожидание: {", ".join(missing)}</div>', unsafe_allow_html=True)
+            run_btn = st.button("Запустить импорт и маршрутизацию", disabled=not all_ready, use_container_width=True, key="run_import")
+
+        with col_info:
+            st.markdown("""
+            <div style="background:rgba(255,255,255,0.03);border-radius:8px;padding:12px 16px;
+                        font-family:'Space Mono',monospace;font-size:0.72rem;color:#555;line-height:1.8;">
+                <div style="color:#888;margin-bottom:4px;">Что произойдёт:</div>
+                1. Файлы сохранятся во временную директорию<br>
+                2. БД очистится и заполнится новыми данными<br>
+                3. Запустится AI-обогащение тикетов<br>
+                4. FIRE Engine распределит тикеты по менеджерам<br>
+                5. Дашборд обновится автоматически
+            </div>
+            """, unsafe_allow_html=True)
+
+        if run_btn and all_ready:
+            import tempfile, subprocess, sys
+            st.markdown("---")
+            section_title("Выполнение")
+            log_container = st.container()
+
+            def step(msg, status="run"):
+                log_container.markdown(f'<div class="upload-step step-{status}">{msg}</div>', unsafe_allow_html=True)
+
+            with st.spinner("Идёт импорт..."):
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        t_path = os.path.join(tmpdir, "tickets.csv")
+                        m_path = os.path.join(tmpdir, "managers.csv")
+                        u_path = os.path.join(tmpdir, "business_units.csv")
+
+                        tickets_file.seek(0); managers_file.seek(0); units_file.seek(0)
+                        with open(t_path, "wb") as f: f.write(tickets_file.read())
+                        with open(m_path, "wb") as f: f.write(managers_file.read())
+                        with open(u_path, "wb") as f: f.write(units_file.read())
+
+                        step("&#10003; Файлы сохранены во временную директорию", "ok")
+                        step("&#9654; Инициализация БД и загрузка данных...", "run")
+
+                        try:
+                            project_root = os.path.dirname(os.path.abspath(__file__))
+                            if project_root not in sys.path:
+                                sys.path.insert(0, project_root)
+
+                            from db import init_db, load_csv, get_connection
+                            conn = get_connection()
+                            with conn.cursor() as cur:
+                                cur.execute("TRUNCATE TABLE assignments  RESTART IDENTITY CASCADE;")
+                                cur.execute("TRUNCATE TABLE ai_analysis  RESTART IDENTITY CASCADE;")
+                                cur.execute("TRUNCATE TABLE tickets      RESTART IDENTITY CASCADE;")
+                                cur.execute("TRUNCATE TABLE managers     RESTART IDENTITY CASCADE;")
+                                cur.execute("TRUNCATE TABLE offices      RESTART IDENTITY CASCADE;")
+                            conn.commit(); conn.close()
+                            init_db()
+                            load_csv(tickets_path=t_path, managers_path=m_path, units_path=u_path)
+                            step("&#10003; БД заполнена", "ok")
+                        except Exception as e:
+                            step(f"&#10007; Ошибка БД: {e}", "err")
+                            st.stop()
+
+                        step("&#9654; Запуск AI-обогащения и маршрутизации...", "run")
+                        step("&#9432; Это может занять 1-3 минуты", "wait")
+
+                        try:
+                            result = subprocess.run(
+                                [sys.executable, os.path.join(project_root, "run.py")],
+                                capture_output=True, text=True, timeout=300, cwd=project_root,
+                            )
+                            if result.returncode == 0:
+                                step("&#10003; Маршрутизация завершена успешно", "ok")
+                                for line in [l for l in result.stdout.strip().split("\n") if l.strip()][-6:]:
+                                    log_container.markdown(f'<div style="font-family:\'Space Mono\',monospace;font-size:0.7rem;color:#555;padding:2px 12px;">{line}</div>', unsafe_allow_html=True)
+                            else:
+                                step("&#10007; run.py завершился с ошибкой", "err")
+                                if result.stderr:
+                                    log_container.code(result.stderr[-1000:], language="text")
+                        except subprocess.TimeoutExpired:
+                            step("&#10007; Таймаут 5 минут превышен", "err")
+                        except Exception as e:
+                            step(f"&#10007; Ошибка запуска: {e}", "err")
+
+                    step("&#10003; Импорт завершён", "ok")
+                    st.success("Данные загружены. Перейдите на страницу Обзор.")
+                    st.cache_data.clear()
+
+                except Exception as e:
+                    step(f"&#10007; Неожиданная ошибка: {e}", "err")
 
 
 # ─────────────────────────────────────────────
@@ -1241,7 +1402,6 @@ elif page == "AI Аналитик":
     if "chat_chart" not in st.session_state:
         st.session_state.chat_chart = None
 
-    # ── Быстрые вопросы ──
     suggested = [
         "Сколько всего тикетов и какой процент эскалаций?",
         "Какой офис обрабатывает больше всего обращений?",
@@ -1262,7 +1422,6 @@ elif page == "AI Аналитик":
     st.markdown("<br>", unsafe_allow_html=True)
     section_title("Чат с данными")
 
-    # ── История чата ──
     if st.session_state.chat_history:
         msgs_html = '<div class="chat-wrap">'
         for msg in st.session_state.chat_history:
@@ -1299,12 +1458,10 @@ elif page == "AI Аналитик":
         </div>
         ''', unsafe_allow_html=True)
 
-    # ── Динамический график под чатом ──
     if st.session_state.chat_chart:
         chart_type, chart_title = st.session_state.chat_chart
         render_chat_chart(chart_type, chart_title)
 
-    # ── Форма ввода ──
     with st.form("chat_form", clear_on_submit=True):
         user_input = st.text_input(
             "q", placeholder="Например: Распределение тональности по городам",
@@ -1332,12 +1489,12 @@ elif page == "AI Аналитик":
             result = post_api("/ai/chat", {"question": user_input, "history": st.session_state.llm_history[-6:]})
 
         answer = result.get("answer", "Нет ответа")
+        answer = strip_markdown(answer)
         source = result.get("source", "unknown")
         st.session_state.chat_history.append({"role": "assistant", "content": answer, "source": source})
         st.session_state.llm_history.append({"role": "user", "content": user_input})
         st.session_state.llm_history.append({"role": "assistant", "content": answer})
 
-        # ── Определяем нужен ли график ──
         st.session_state.chat_chart = detect_chart_type(user_input)
 
         st.rerun()

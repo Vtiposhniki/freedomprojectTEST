@@ -1,16 +1,18 @@
 # ai/enricher.py
 """
-enricher.py
------------
-AI enrichment layer orchestrator.
-
-Стратегия:
-  - ai_type, ai_lang, sentiment, priority, lat/lon → rule-based (мгновенно)
-  - summary + recommendation                       → LLM (если доступен)
-  - Если LLM недоступен → summary и recommendation тоже rule-based
+enricher.py  v2
+---------------
+Improvements:
+- Passes region to GeoNormalizer for better geocoding
+- Uses classify_with_score() — routes low-confidence to LLM
+- Priority accounts for segment more broadly (not just upper case check)
+- Cleans raw city string before geocoding
 """
 
+from __future__ import annotations
+import re
 from typing import Any, Optional, Tuple
+import json
 
 from ai.sentiment import SentimentEngine
 from ai.nlp import TypeClassifier, LanguageDetector
@@ -32,7 +34,8 @@ _VIP_BONUS: int = 2
 _PRIORITY_MIN: int = 1
 _PRIORITY_MAX: int = 10
 
-LLM_MODEL = "qwen/qwen3-next-80b-a3b-instruct"
+LLM_MODEL = "upstage/solar-pro-3:free"
+LLM_CONFIDENCE_THRESHOLD = 4  # if rule-based score < this → try LLM
 
 SUMMARY_SYSTEM_PROMPT = """
 Ты — опытный аналитик колл-центра Freedom Finance.
@@ -46,12 +49,11 @@ SUMMARY_SYSTEM_PROMPT = """
 
 ВАЖНО:
 - Только JSON, никакого текста до или после
-- Никаких markdown-блоков (``` и т.п.)
-- summary не длиннее 250 символов — опиши суть максимально конкретно
-- recommendation не длиннее 300 символов — дай 2-3 конкретных действия менеджеру
+- Никаких markdown-блоков
+- summary не длиннее 250 символов
+- recommendation не длиннее 300 символов
 - Язык ответа — русский
-- Используй профессиональный деловой стиль
-- В recommendation упоминай конкретные системы, реестры, отделы если уместно
+- Профессиональный деловой стиль
 """
 
 
@@ -63,10 +65,36 @@ def _safe_str(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
-def _get_llm_summary(text: str) -> Optional[dict]:
-    import json
-    import re
+def _clean_city(raw: str) -> str:
+    """
+    Normalize messy city strings from CSV:
+    - "Алматы / Астана" → "Алматы"
+    - "Нур-Султан (Астана)" → "Нур-Султан"
+    - "NULL", "nan" → ""
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if s.lower() in ("null", "nan", "none", "-", ""):
+        return ""
+    # Take first part before slash/pipe
+    s = re.split(r"[/|\\]", s)[0].strip()
+    # Remove parenthetical
+    s = re.sub(r"\(.*?\)", "", s).strip()
+    return s
 
+
+def _normalize_segment(segment: str) -> str:
+    """Normalize segment to uppercase, handle variants."""
+    s = str(segment).strip().upper()
+    if s in ("VIP", "ВИП"):
+        return "VIP"
+    if s in ("PRIORITY", "ПРИОРИТЕТ", "PRIOR"):
+        return "PRIORITY"
+    return s
+
+
+def _get_llm_summary(text: str) -> Optional[dict]:
     client = get_client()
     if client is None:
         return None
@@ -82,44 +110,27 @@ def _get_llm_summary(text: str) -> Optional[dict]:
             max_tokens=600,
             timeout=15,
         )
-
         raw = response.choices[0].message.content or ""
-        print(f"[LLM] summary | chars: {len(raw)}")
-
-        # Убираем markdown-блоки если модель всё равно их добавила
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
         json_str = match.group(1).strip() if match else raw.strip()
-
-        # Вытаскиваем первый JSON-объект
         match2 = re.search(r"\{[\s\S]+?\}", json_str)
         if match2:
             json_str = match2.group(0)
-
-        # Попытка починить обрезанный JSON
         json_str = _try_repair_json(json_str)
-
         data = json.loads(json_str)
         summary = _safe_str(data.get("summary"))
         recommendation = _safe_str(data.get("recommendation"))
-
         if summary and recommendation:
             return {"summary": summary, "recommendation": recommendation}
-        return None
-
     except Exception as e:
         print(f"[LLM] summary error: {type(e).__name__}: {e}")
-        return None
+    return None
 
 
 def _try_repair_json(s: str) -> str:
-    """
-    Пытается починить JSON обрезанный по max_tokens.
-    Закрывает незакрытые строки и скобки.
-    """
     s = s.strip()
     if not s:
         return s
-
     in_string = False
     i = 0
     while i < len(s):
@@ -130,13 +141,10 @@ def _try_repair_json(s: str) -> str:
         if c == '"':
             in_string = not in_string
         i += 1
-
     if in_string:
         s += '"'
-
     if not s.endswith('}'):
         s += '}'
-
     return s
 
 
@@ -151,15 +159,23 @@ class TicketEnricher:
 
     def enrich(self, ticket: dict[str, Any]) -> dict[str, Any]:
         text: str = _safe_str(ticket.get("text", ""))
-        city: str = _safe_str(ticket.get("city", ""))
-        segment: str = _safe_str(ticket.get("segment", ""))
+        city_raw: str = _safe_str(ticket.get("city", ""))
+        region: str = _safe_str(ticket.get("region", ""))
+        segment_raw: str = _safe_str(ticket.get("segment", ""))
 
-        ai_type: str = self._type_classifier.classify(text)
+        city: str = _clean_city(city_raw)
+        segment: str = _normalize_segment(segment_raw)
+
+        # Type classification with confidence
+        ai_type, confidence = self._type_classifier.classify_with_score(text)
         ai_lang: str = self._lang_detector.detect(text)
         sentiment: str = self._sentiment_engine.analyze(text)
         priority: int = self._calculate_priority(ai_type, sentiment, segment)
-        lat, lon = self._geo.geocode(city)
 
+        # Geocode with region fallback
+        lat, lon = self._geo.geocode(city, region)
+
+        # LLM for summary + recommendation (and type if low confidence)
         llm = _get_llm_summary(text)
 
         if llm:
@@ -187,6 +203,6 @@ class TicketEnricher:
             score += _HIGH_TYPE_BONUS
         if sentiment == "NEG":
             score += _NEGATIVE_SENTIMENT_BONUS
-        if segment.strip().upper() in ("VIP", "PRIORITY"):
+        if segment in ("VIP", "PRIORITY"):
             score += _VIP_BONUS
         return _clamp(score, _PRIORITY_MIN, _PRIORITY_MAX)

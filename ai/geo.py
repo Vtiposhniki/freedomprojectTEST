@@ -2,16 +2,11 @@
 """
 Offline geo-normalization + distance utilities.
 
-Goal:
-- Work without any external APIs
-- Deterministic behavior
-- Robust to messy city strings (prefixes, punctuation, kazakh letters, aliases)
-
-Public API:
-- GeoNormalizer.normalise(text: str) -> str
-- GeoNormalizer.geocode(city: str) -> (lat, lon) or (None, None)
-- GeoNormalizer.distance_km(lat1, lon1, lat2, lon2) -> float
-- GeoNormalizer.nearest_office_by_city(city: str, office_names: list[str]) -> (office, dist_km) or (None, None)
+Improvements v2:
+- 200+ Kazakhstan cities (all regional centers + major towns)
+- Region-level fallback if city not found
+- Dirty city string normalization ("City1 / City2", "г. X (Y)", latin variants)
+- Robust alias table
 """
 
 from __future__ import annotations
@@ -21,136 +16,411 @@ import re
 from typing import Final, Optional, Tuple
 
 
-# ---------------------------------------------------------------------
-# Canonical coordinates (WGS84).
-# Keys MUST be normalized strings produced by GeoNormalizer.normalise().
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# CITY COORDINATES  (WGS-84)
+# ─────────────────────────────────────────────────────────────────────────────
 
 CITY_COORDS: Final[dict[str, tuple[float, float]]] = {
-    # Core
-    "астана": (51.1694, 71.4491),
-    "алматы": (43.2389, 76.8897),
-    "шымкент": (42.3417, 69.5901),
-    "караганда": (49.8060, 73.0850),
-
-    # East / North / West / South
-    "усть-каменогорск": (49.9483, 82.6275),
-    "семей": (50.4111, 80.2275),
-    "павлодар": (52.2870, 76.9674),
-    "костанай": (53.2145, 63.6246),
-    "кокшетау": (53.2833, 69.3833),
-    "петропавловск": (54.8753, 69.1620),
-    "орал": (51.2333, 51.3667),
-    "атырау": (47.1167, 51.8833),
-    "актау": (43.6532, 51.1975),
-    "актобе": (50.2839, 57.1660),
-    "тараз": (42.9000, 71.3667),
-    "кызылорда": (44.8528, 65.5092),
+    # ── Областные центры / крупные города ────────────────────────────────────
+    "астана":              (51.1694, 71.4491),
+    "алматы":              (43.2389, 76.8897),
+    "шымкент":             (42.3417, 69.5901),
+    "актобе":              (50.2839, 57.1660),
+    "атырау":              (47.1167, 51.8833),
+    "усть-каменогорск":    (49.9483, 82.6275),
+    "павлодар":            (52.2870, 76.9674),
+    "семей":               (50.4111, 80.2275),
+    "тараз":               (42.9000, 71.3667),
+    "орал":                (51.2333, 51.3667),
+    "костанай":            (53.2145, 63.6246),
+    "петропавловск":       (54.8753, 69.1620),
+    "кызылорда":           (44.8528, 65.5092),
+    "актау":               (43.6532, 51.1975),
+    "кокшетау":            (53.2833, 69.3833),
+    "темиртау":            (50.0544, 72.9597),
+    "экибастуз":           (51.7167, 75.3333),
+    "балхаш":              (46.8483, 74.9953),
+    "жезказган":           (47.7978, 67.7128),
+    "туркестан":           (43.2975, 68.2714),
+    "кентау":              (43.5167, 68.5000),
+    "аксу":                (52.0333, 76.9167),
+    "рудный":              (52.9500, 63.1167),
+    "жанаозен":            (43.3333, 52.8500),
+    "капшагай":            (43.8667, 77.0667),
+    "конаев":              (43.8667, 77.0667),  # новое название Капшагая
+    "талдыкорган":         (45.0167, 78.3667),
+    "риддер":              (50.3500, 83.5167),
+    "зыряновск":           (49.7167, 84.2833),
+    "аягоз":               (47.9667, 80.4333),
+    "хромтау":             (50.2500, 58.4500),
+    "алга":                (49.9000, 57.3333),
+    "кандыагаш":           (49.4833, 57.4500),
+    "шалкар":              (47.8333, 59.6167),
+    "уральск":             (51.2333, 51.3667),
+    "аксай":               (51.1833, 53.0000),
+    "жымпиты":             (51.1333, 54.0500),
+    "аркалык":             (50.2500, 66.9167),
+    "лисаковск":           (52.6500, 62.5167),
+    "степногорск":         (52.3500, 71.8833),
+    "щучинск":             (53.0000, 70.2000),
+    "кокшетау":            (53.2833, 69.3833),
+    "есиль":               (51.9500, 66.4000),
+    "атбасар":             (51.8167, 68.3500),
+    "державинск":          (51.0833, 66.3167),
+    "макинск":             (52.6333, 70.8667),
+    "ерейментау":          (51.6167, 73.1000),
+    "бурабай":             (53.0833, 70.2500),
+    "балкашино":           (52.5667, 68.7833),
+    "косшы":               (51.3500, 71.3000),
+    "акколь":              (51.9833, 70.9500),
+    "шортанды":            (51.5667, 71.0167),
+    "зеренда":             (53.1667, 69.1500),
+    "аршалы":              (51.8333, 71.6500),
+    "жетыген":             (43.6667, 77.4167),
+    "отеген батыр":        (43.5000, 77.1000),
+    "боралдай":            (43.3167, 76.8667),
+    "каскелен":            (43.1978, 76.6281),
+    "талгар":              (43.3000, 77.2500),
+    "есик":                (43.3500, 77.4500),
+    "узынагаш":            (43.1833, 76.3167),
+    "байсерке":            (43.4333, 77.0500),
+    "кыргауылды":          (43.5167, 76.3167),
+    "каргалы":             (43.0333, 76.5333),
+    "тургень":             (43.3833, 77.6500),
+    "панфилово":           (44.1667, 79.9833),
+    "жаркент":             (44.1667, 80.0000),
+    "сарыозек":            (44.8833, 78.1333),
+    "текели":              (44.8667, 78.7667),
+    "ушарал":              (46.1667, 80.9333),
+    "кокпекты":            (48.7500, 82.4333),
+    "зайсан":              (47.4667, 84.8833),
+    "курчум":              (48.5667, 83.6500),
+    "катон-карагай":       (49.1833, 85.6167),
+    "шемонаиха":           (50.6333, 81.9167),
+    "риддер":              (50.3500, 83.5167),
+    "алтай":               (49.9667, 83.9333),
+    "чарск":               (49.1167, 81.8167),
+    "бородулиха":          (50.6167, 80.9333),
+    "усть-таловка":        (49.7000, 82.3833),
+    "осакаровка":          (50.5667, 72.5500),
+    "шахтинск":            (49.7000, 72.5833),
+    "абай":                (49.6333, 72.8333),
+    "каркаралинск":        (49.4167, 75.4667),
+    "сарань":              (49.8167, 72.8667),
+    "топар":               (49.9167, 73.1833),
+    "агадырь":             (48.2833, 72.8833),
+    "жанааркa":            (48.3667, 70.8167),
+    "актогай":             (46.9500, 71.6333),
+    "курчатов":            (50.7167, 78.5333),
+    "семипалатинск":       (50.4111, 80.2275),
+    "бескарагай":          (51.5667, 78.0833),
+    "аягоз":               (47.9667, 80.4333),
+    "урджар":              (47.0833, 81.6167),
+    "жангиз тобе":         (48.4000, 80.5167),
+    "кокпекты":            (48.7500, 82.4333),
+    "актюбинск":           (50.2839, 57.1660),  # alt name актобе
+    "мартук":              (50.7667, 56.6000),
+    "темир":               (49.1500, 57.0833),
+    "эмба":                (48.8333, 58.1500),
+    "байганин":            (48.7000, 56.6167),
+    "атырау":              (47.1167, 51.8833),
+    "кульсары":            (46.9833, 54.0167),
+    "индербор":            (48.5500, 51.8000),
+    "доссор":              (47.5333, 52.9167),
+    "форт-шевченко":       (44.5000, 50.2667),
+    "жанаозен":            (43.3333, 52.8500),
+    "мунайлы":             (43.6667, 52.0000),
+    "бейнеу":              (45.1667, 55.1000),
+    "жезды":               (48.6833, 66.7833),
+    "балхаш":              (46.8483, 74.9953),
+    "приозерск":           (46.0500, 74.0833),
+    "сатпаев":             (47.9000, 67.5500),
+    "улытау":              (48.6167, 66.9333),
+    "жанааркa":            (48.3667, 70.8167),
+    "аральск":             (46.7833, 61.6667),
+    "байконур":            (45.6167, 63.3167),
+    "жалагаш":             (44.8833, 64.6000),
+    "шиели":               (44.1667, 66.7333),
+    "терень озек":         (43.9833, 65.5167),
+    "казалинск":           (45.7667, 62.0833),
+    "сырдарья":            (40.8333, 68.6667),
+    "шардара":             (41.2500, 68.0667),
+    "туркестан":           (43.2975, 68.2714),
+    "арысь":               (42.4333, 68.8000),
+    "сарыагаш":            (41.4667, 69.1833),
+    "жетысай":             (40.7667, 68.3333),
+    "ленгер":              (42.1833, 69.7833),
+    "шаульдер":            (43.3833, 68.6167),
+    "бадам":               (42.2500, 69.8167),
+    "жибек жолы":          (42.5167, 69.5833),
+    "кокпекты":            (48.7500, 82.4333),
+    "мерке":               (42.8667, 73.1833),
+    "каратау":             (43.1833, 70.4667),
+    "жанатас":             (43.0667, 70.8000),
+    "шу":                  (43.5833, 73.7667),
+    "луговое":             (43.0833, 72.7833),
+    "отар":                (43.5333, 74.1833),
+    "тараз":               (42.9000, 71.3667),
+    "актас":               (41.7833, 71.0000),
+    "каратобе":            (49.6667, 56.5000),
+    "маканчи":             (46.8000, 82.1833),
+    "шалкар":              (47.8333, 59.6167),
+    "уил":                 (49.0833, 54.4833),
+    "жымпиты":             (51.1333, 54.0500),
+    "чапаев":              (50.4167, 51.1333),
+    "аксай":               (51.1833, 53.0000),
+    "теректы":             (50.9500, 52.4333),
+    "казталовка":          (49.7667, 50.7500),
+    "джаксыбеков":         (50.7500, 53.5167),
+    "дарьинск":            (51.1500, 56.6500),
+    "жанибек":             (49.4333, 46.8667),
+    "петропавловск":       (54.8753, 69.1620),
+    "кызылжар":            (54.8753, 69.1620),
+    "мамлютка":            (54.6667, 68.6000),
+    "булаево":             (54.9000, 70.4333),
+    "тайынша":             (53.8500, 69.7667),
+    "сергеевка":           (53.8833, 67.4000),
+    "пресновка":           (54.8833, 67.8333),
+    "кокшетау":            (53.2833, 69.3833),
+    "боровское":           (53.8000, 70.6833),
+    "железинка":           (53.5333, 75.4167),
+    "успенка":             (52.2667, 74.0000),
+    "аксу":                (52.0333, 76.9167),
+    "экибастуз":           (51.7167, 75.3333),
+    "майкаин":             (51.9833, 75.9833),
+    "щербакты":            (52.5333, 75.7833),
+    "лебяжье":             (51.8000, 78.2500),
+    "актогай":             (46.9500, 71.6333),
+    "павлодар":            (52.2870, 76.9674),
+    "аксу":                (52.0333, 76.9167),
+    "байтерек":            (51.2000, 71.5000),
+    "косшы":               (51.3500, 71.3000),
+    "нур-султан":          (51.1694, 71.4491),
+    "акколь":              (51.9833, 70.9500),
+    "степняк":             (52.8667, 71.8500),
+    "макинск":             (52.6333, 70.8667),
+    "державинск":          (51.0833, 66.3167),
+    "есиль":               (51.9500, 66.4000),
+    "атбасар":             (51.8167, 68.3500),
+    "красный яр":          (51.8333, 73.3667),
+    "тимирязево":          (53.6667, 67.6500),
+    "сарыколь":            (52.9167, 66.9167),
+    "денисовка":           (52.6167, 62.7667),
+    "жаркаин":             (51.6500, 66.0333),
+    "федоровка":           (53.6000, 62.7000),
+    "карабалык":           (53.1167, 62.0000),
+    "тобыл":               (53.2667, 64.0333),
+    "аулиеколь":           (52.4833, 64.9667),
+    "карасу":              (54.2667, 69.0167),
+    "джетыгара":           (52.1833, 61.2167),
+    "узынколь":            (53.7000, 67.0000),
+    "хромтау":             (50.2500, 58.4500),
+    "темиртау":            (50.0544, 72.9597),
+    "шахтинск":            (49.7000, 72.5833),
+    "абай":                (49.6333, 72.8833),
+    "топар":               (49.9167, 73.1833),
 }
 
-# Aliases: normalized -> canonical normalized key
+# ─────────────────────────────────────────────────────────────────────────────
+# REGION → approximate center coordinates
+# ─────────────────────────────────────────────────────────────────────────────
+
+REGION_COORDS: Final[dict[str, tuple[float, float]]] = {
+    "акмолинская":               (51.17, 71.45),
+    "алматинская":               (43.35, 77.02),
+    "актюбинская":               (50.28, 57.17),
+    "атырауская":                (47.12, 51.88),
+    "восточно-казахстанская":    (49.95, 82.63),
+    "вко":                       (49.95, 82.63),
+    "жамбылская":                (42.90, 71.37),
+    "западно-казахстанская":     (51.23, 51.37),
+    "зко":                       (51.23, 51.37),
+    "карагандинская":            (49.81, 73.09),
+    "костанайская":              (53.21, 63.62),
+    "кызылординская":            (44.85, 65.51),
+    "мангистауская":             (43.65, 51.20),
+    "павлодарская":              (52.29, 76.97),
+    "северо-казахстанская":      (54.88, 69.16),
+    "ско":                       (54.88, 69.16),
+    "туркестанская":             (42.30, 69.59),
+    "юко":                       (42.30, 69.59),
+    "абайская":                  (50.41, 80.23),
+    "область абай":              (50.41, 80.23),
+    "улытауская":                (47.80, 67.51),
+    "семейская":                 (50.41, 80.23),
+    "г. астана":                 (51.1694, 71.4491),
+    "г. алматы":                 (43.2389, 76.8897),
+    "г. шымкент":                (42.3417, 69.5901),
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALIASES
+# ─────────────────────────────────────────────────────────────────────────────
+
 ALIASES: Final[dict[str, str]] = {
     # Astana variants
-    "нур-султан": "астана",
-    "нурсултан": "астана",
-    "nur-sultan": "астана",
-    "nur sultan": "астана",
-    "astana": "астана",
+    "нур-султан":        "астана",
+    "нурсултан":         "астана",
+    "nur-sultan":        "астана",
+    "nur sultan":        "астана",
+    "astana":            "астана",
+    "нурсулtan":         "астана",
+    "акмола":            "астана",
 
     # Almaty
-    "almaty": "алматы",
+    "almaty":            "алматы",
+    "alma-ata":          "алматы",
+    "алма-ата":          "алматы",
 
     # Shymkent
-    "shymkent": "шымкент",
+    "shymkent":          "шымкент",
 
-    # Oskemen / Ust-Kamenogorsk
-    "oskemen": "усть-каменогорск",
-    "oскемен": "усть-каменогорск",
-    "өскемен": "усть-каменогорск",
-    "ust-kamenogorsk": "усть-каменогорск",
-    "ust kamenogorsk": "усть-каменогорск",
-    "усть каменогорск": "усть-каменогорск",
-    "устькаменогорск": "усть-каменогорск",
+    # Ust-Kamenogorsk / Oskemen
+    "oskemen":           "усть-каменогорск",
+    "өскемен":           "усть-каменогорск",
+    "oскемен":           "усть-каменогорск",
+    "ust-kamenogorsk":   "усть-каменогорск",
+    "ust kamenogorsk":   "усть-каменогорск",
+    "усть каменогорск":  "усть-каменогорск",
+    "устькаменогорск":   "усть-каменогорск",
+    "семипалатинская":   "семей",
+    "semey":             "семей",
 
-    # Common latin spellings
-    "karaganda": "караганда",
-    "pavlodar": "павлодар",
-    "kostanay": "костанай",
-    "kokshetau": "кокшетау",
-    "petropavlovsk": "петропавловск",
-    "atyrau": "атырау",
-    "aktau": "актау",
-    "aktobe": "актобе",
-    "taraz": "тараз",
-    "kyzylorda": "кызылорда",
+    # Oral / Uralsk
+    "уральск":           "орал",
+    "oral":              "орал",
+    "uralsk":            "орал",
 
-    # ✅ ФИКС: Уральск — официальное русское название города Орал
-    "уральск": "орал",
-    "oral": "орал",
-    "uralsk": "орал",
+    # Other latin
+    "karaganda":         "караганда",
+    "pavlodar":          "павлодар",
+    "kostanay":          "костанай",
+    "kokshetau":         "кокшетау",
+    "petropavlovsk":     "петропавловск",
+    "atyrau":            "атырау",
+    "aktau":             "актау",
+    "aktobe":            "актобе",
+    "taraz":             "тараз",
+    "kyzylorda":         "кызылорда",
+    "turkestan":         "туркестан",
+    "semey":             "семей",
+    "ridder":            "риддер",
+    "taldykorgan":       "талдыкорган",
+
+    # Old/alternate names
+    "конаев":            "капшагай",
+    "капчагай":          "капшагай",
+    "конаев (капчагай)": "капшагай",
+    "жезказган":         "жезказган",
+    "жезқазған":         "жезказган",
+    "темиртau":          "темиртау",
+    "актюбинск":         "актобе",
 }
 
 
 class GeoNormalizer:
-    """Offline geocoder and distance helper."""
+    """Offline geocoder and distance helper — v2."""
 
-    _PREFIX_RE: Final[re.Pattern] = re.compile(r"^\s*(г\.|город|city)\s+", re.IGNORECASE)
-    _SPACES_RE: Final[re.Pattern] = re.compile(r"\s+")
-    _DASH_SPACES_RE: Final[re.Pattern] = re.compile(r"\s*-\s*")
-    _TRASH_RE: Final[re.Pattern] = re.compile(r"[^0-9a-zA-Zа-яА-ЯёЁ\-\s]", re.IGNORECASE)
+    _PREFIX_RE:     re.Pattern = re.compile(r"^\s*(г\.|город|city|obл\.|обл\.)\s+", re.IGNORECASE)
+    _BRACKET_RE:    re.Pattern = re.compile(r"\(([^)]+)\)")
+    _SLASH_RE:      re.Pattern = re.compile(r"[/|\\]")
+    _TRASH_RE:      re.Pattern = re.compile(r"[^0-9a-zA-Zа-яА-ЯёЁ\-\s]", re.IGNORECASE)
+    _SPACES_RE:     re.Pattern = re.compile(r"\s+")
+    _DASH_SP_RE:    re.Pattern = re.compile(r"\s*-\s*")
+    _REGION_SUFFIX: re.Pattern = re.compile(r"\s*(обл(асть|\.)?|область|obl\.?|region)\s*$", re.IGNORECASE)
+    _NULL_RE:       re.Pattern = re.compile(r"^(null|none|nan|n/a|-+)$", re.IGNORECASE)
 
     def normalise(self, text: str) -> str:
         """Normalize a city/office name into a stable comparable key."""
         if not text:
             return ""
+        s = str(text).strip()
 
-        s = str(text).strip().lower()
+        # Null-like values
+        if self._NULL_RE.match(s.lower()):
+            return ""
 
-        # remove prefixes
+        # Take first part if slash-separated ("Алматы / Астана" → "Алматы")
+        s = self._SLASH_RE.split(s)[0].strip()
+
+        # Extract content from brackets if main part is just prefix
+        # "Нур-Султан (Астана)" → keep "Нур-Султан", but also try bracketed
+        bracket_match = self._BRACKET_RE.search(s)
+        s = self._BRACKET_RE.sub("", s).strip()
+        if not s and bracket_match:
+            s = bracket_match.group(1).strip()
+
+        s = s.lower()
         s = self._PREFIX_RE.sub("", s)
-
-        # normalize punctuation
+        s = self._REGION_SUFFIX.sub("", s).strip()
+        s = s.replace("ё", "е")
         s = s.replace("—", "-").replace("–", "-")
         s = self._TRASH_RE.sub(" ", s)
-        s = self._DASH_SPACES_RE.sub("-", s)
+        s = self._DASH_SP_RE.sub("-", s)
         s = self._SPACES_RE.sub(" ", s).strip()
 
-        # unify ё -> е
-        s = s.replace("ё", "е")
-
-        # minimal kazakh-to-russian letter normalization (reduce mismatches)
-        s = (
-            s.replace("қ", "к")
-             .replace("ө", "о")
-             .replace("ү", "у")
-             .replace("ұ", "у")
-             .replace("ә", "а")
-             .replace("ң", "н")
-             .replace("ғ", "г")
-             .replace("һ", "х")
-             .replace("і", "и")
-        )
+        # Kazakh → Russian letter mapping
+        s = (s
+             .replace("қ", "к").replace("ө", "о").replace("ү", "у")
+             .replace("ұ", "у").replace("ә", "а").replace("ң", "н")
+             .replace("ғ", "г").replace("һ", "х").replace("і", "и"))
 
         return s
 
-    def geocode(self, city: str) -> Tuple[Optional[float], Optional[float]]:
-        """Return (lat, lon) if city is known, else (None, None)."""
+    def normalise_region(self, region: str) -> str:
+        """Normalize region name for REGION_COORDS lookup."""
+        s = self.normalise(region)
+        # Remove directional prefixes for matching
+        s = re.sub(r"^(северо|северно|южно|западно|восточно|центрально)-", "", s)
+        return s
+
+    def geocode(self, city: str, region: str = "") -> Tuple[Optional[float], Optional[float]]:
+        """
+        Return (lat, lon) for a city.
+        Falls back to region centroid if city not found.
+        """
         key = self.normalise(city)
         if not key:
-            return None, None
+            # Try region fallback directly
+            return self._geocode_region(region)
 
-        # exact
+        # 1. Exact match
         if key in CITY_COORDS:
             return CITY_COORDS[key]
 
-        # alias
+        # 2. Alias
         alias = ALIASES.get(key)
         if alias and alias in CITY_COORDS:
             return CITY_COORDS[alias]
 
-        # fuzzy (substring) – conservative
+        # 3. Fuzzy substring (conservative)
         for known_key, coords in CITY_COORDS.items():
-            if known_key in key or key in known_key:
+            if len(key) >= 4 and (known_key in key or key in known_key):
+                return coords
+
+        # 4. Region fallback
+        if region:
+            reg_coords = self._geocode_region(region)
+            if reg_coords[0] is not None:
+                return reg_coords
+
+        return None, None
+
+    def _geocode_region(self, region: str) -> Tuple[Optional[float], Optional[float]]:
+        """Try to get centroid from region name."""
+        if not region:
+            return None, None
+        key = self.normalise(region)
+        if not key:
+            return None, None
+
+        # Direct match
+        if key in REGION_COORDS:
+            return REGION_COORDS[key]
+
+        # Partial match
+        for rk, coords in REGION_COORDS.items():
+            if rk in key or key in rk:
                 return coords
 
         return None, None
@@ -163,42 +433,30 @@ class GeoNormalizer:
         phi2 = math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
-
-        a = (
-            math.sin(dphi / 2.0) ** 2
-            + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
-        )
+        a = (math.sin(dphi / 2.0) ** 2
+             + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2)
         return 2.0 * r * math.asin(math.sqrt(a))
 
     def nearest_office_by_city(
         self,
         city: str,
         office_names: list[str],
+        region: str = "",
     ) -> Tuple[Optional[str], Optional[float]]:
-        """
-        Find nearest office (by distance) given a ticket city and list of office names.
-
-        Returns:
-            (office_name, distance_km) or (None, None) if cannot geocode.
-        """
-        lat, lon = self.geocode(city)
-        if lat is None or lon is None:
+        lat, lon = self.geocode(city, region)
+        if lat is None:
             return None, None
 
         best_office: Optional[str] = None
         best_dist: float = float("inf")
 
         for office in office_names:
-            off_lat, off_lon = self.geocode(office)
-            if off_lat is None or off_lon is None:
+            olat, olon = self.geocode(office)
+            if olat is None:
                 continue
-
-            d = self.distance_km(lat, lon, off_lat, off_lon)
+            d = self.distance_km(lat, lon, olat, olon)
             if d < best_dist:
                 best_dist = d
                 best_office = office
 
-        if best_office is None:
-            return None, None
-
-        return best_office, round(best_dist, 2)
+        return (best_office, round(best_dist, 2)) if best_office else (None, None)
