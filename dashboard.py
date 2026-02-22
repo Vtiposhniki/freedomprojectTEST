@@ -3,7 +3,7 @@
 FIRE Engine — Streamlit Dashboard
 Запуск: streamlit run dashboard.py
 """
-
+import os
 import streamlit as st
 import requests
 import pandas as pd
@@ -15,7 +15,7 @@ import io
 # КОНФИГ
 # ─────────────────────────────────────────────
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("API_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="FIRE Engine Dashboard",
